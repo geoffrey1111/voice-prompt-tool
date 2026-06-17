@@ -1,0 +1,29 @@
+# 模型与运行时（体积过大，不入库）
+runtime/
+ollama/
+ollama-models/
+
+# 缓存与临时文件
+cache/
+logs/
+*.log
+
+# 用户录音（隐私数据）
+recordings/
+*.wav
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+*.env
+
+# 开发测试脚本
+test_wechat_*.py
+replace_icon.py
+
+# 其他
+.DS_Store
+Thumbs.db

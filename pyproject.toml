@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-prompt-tool"
+version = "0.1.0"
+description = "Local microphone-to-AI-prompt prototype."
+requires-python = ">=3.12"
+dependencies = [
+  "faster-whisper>=1.1.1",
+  "numpy>=2.0.0",
+  "pyperclip>=1.9.0",
+  "PySide6>=6.9.0",
+  "sounddevice>=0.5.1",
+]
+
+[project.scripts]
+voice-prompt = "voice_prompt_tool.cli:main"
+voice-prompt-desktop = "voice_prompt_tool.desktop_app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
