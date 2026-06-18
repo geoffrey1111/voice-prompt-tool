@@ -159,6 +159,10 @@ class DesktopModelWarmup:
             stop_ollama_after=False,
         )
 
+    def rewrite_text(self, text: str) -> str:
+        bundle = self._require_bundle()
+        return bundle.rewrite(text)
+
     def transcribe_only(self, audio_path: Path) -> VoicePromptResult:
         bundle = self._require_bundle()
         raw_text = bundle.transcribe(Path(audio_path)).strip()

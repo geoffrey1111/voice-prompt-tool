@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -56,8 +57,12 @@ VK_RCONTROL = 0xA3
 VK_SPACE = 0x20
 VK_MENU = 0x12
 VK_RMENU = 0xA5
+VK_SHIFT = 0x10
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
 HOTKEY_AI = 61015
 HOTKEY_DICTATION = 61016
+SYNTHETIC_EXTRA_INFO = 1  # marker on our own SendInput events so the hook skips them
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 # On 64-bit Windows, WPARAM/LPARAM/LRESULT are 64-bit; ctypes.wintypes uses c_long (32-bit)
@@ -306,15 +311,18 @@ class SettingsDialog(QDialog):
 
 
 class RightAltKeyboardHook(QObject):
-    activated = Signal()    # right Alt pressed
-    ctrl_space = Signal()   # Ctrl+Space pressed
+    activated = Signal()          # right Alt pressed
+    ctrl_space = Signal()         # Ctrl+Space pressed
+    ctrl_shift_space = Signal()   # Ctrl+Shift+Space pressed
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._hook_handle = None
         self._right_alt_down = False
         self._ctrl_down = False
+        self._shift_down = False
         self._ctrl_space_down = False
+        self._ctrl_shift_space_down = False
         self._callback = HOOK_CALLBACK(self._keyboard_proc)
 
     def install(self) -> None:
@@ -340,6 +348,9 @@ class RightAltKeyboardHook(QObject):
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code >= 0 and l_param:
             event = KBDLLHOOKSTRUCT.from_address(int(l_param))
+            if event.dwExtraInfo == SYNTHETIC_EXTRA_INFO:
+                # Our own synthetic keystroke — pass through without processing
+                return ctypes.windll.user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
             if self._handle_key_event(int(event.vkCode), int(event.flags), int(w_param)):
                 return 1  # suppress right Alt so it never reaches the target text field
         return ctypes.windll.user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
@@ -357,21 +368,38 @@ class RightAltKeyboardHook(QObject):
                 self._ctrl_down = False
             return False
 
+        # Track Shift key state (never suppress Shift itself)
+        if vk_code in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
+            if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                self._shift_down = True
+            elif message in (WM_KEYUP, WM_SYSKEYUP):
+                self._shift_down = False
+            return False
+
         # If hardware says Ctrl is not held but our flag says it is, reset the flag.
         if self._ctrl_down and not actual_ctrl:
             self._ctrl_down = False
             self._ctrl_space_down = False
+            self._ctrl_shift_space_down = False
 
-        # Ctrl+Space — handled here instead of RegisterHotKey so IME can't block it
+        # Ctrl+Shift+Space / Ctrl+Space — handled here instead of RegisterHotKey so IME can't block it
         if vk_code == VK_SPACE:
             if self._ctrl_down and message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                if not self._ctrl_space_down:
-                    self._ctrl_space_down = True
-                    self.ctrl_space.emit()
+                if self._shift_down:
+                    if not self._ctrl_shift_space_down:
+                        self._ctrl_shift_space_down = True
+                        self.ctrl_shift_space.emit()
+                else:
+                    if not self._ctrl_space_down:
+                        self._ctrl_space_down = True
+                        self.ctrl_space.emit()
                 return True  # suppress Space while Ctrl held
             if self._ctrl_space_down and message in (WM_KEYUP, WM_SYSKEYUP):
                 self._ctrl_space_down = False
                 return True  # suppress the matching key-up
+            if self._ctrl_shift_space_down and message in (WM_KEYUP, WM_SYSKEYUP):
+                self._ctrl_shift_space_down = False
+                return True
             return False
 
         # Right Alt
@@ -397,6 +425,7 @@ class RightAltKeyboardHook(QObject):
 class GlobalHotkeyReceiver(QWidget):
     activated = Signal()
     dictation_activated = Signal()
+    rewrite_activated = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -405,6 +434,7 @@ class GlobalHotkeyReceiver(QWidget):
         self._right_alt_hook.activated.connect(self.dictation_activated.emit)
         # Ctrl+Space is now handled in the low-level hook (bypasses IME interception)
         self._right_alt_hook.ctrl_space.connect(self.activated.emit)
+        self._right_alt_hook.ctrl_shift_space.connect(self.rewrite_activated.emit)
 
     def register(self) -> None:
         if self._registered:
@@ -455,6 +485,156 @@ class ProcessingThread(QThread):
             self.completed.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class RewriteSelectionThread(QThread):
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, text: str, model_warmup: DesktopModelWarmup, parent=None) -> None:
+        super().__init__(parent)
+        self.text = text
+        self.model_warmup = model_warmup
+
+    def run(self) -> None:
+        try:
+            result = self.model_warmup.rewrite_text(self.text)
+            self.completed.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+PANEL_STYLE = """
+* {
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+    font-size: 13px;
+}
+QPlainTextEdit {
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    padding: 6px;
+    background: #fafafa;
+}
+QPlainTextEdit[readOnly="true"] {
+    background: #f0f4f8;
+}
+QPushButton {
+    border-radius: 6px;
+    padding: 6px 16px;
+    background: #1a73e8;
+    color: white;
+    font-weight: 600;
+    border: none;
+}
+QPushButton:hover { background: #1558b0; }
+QPushButton:disabled { background: #c0c8d0; color: #888; }
+QPushButton#copyBtn {
+    background: #34a853;
+}
+QPushButton#copyBtn:hover { background: #1e7e34; }
+QPushButton#copyBtn:disabled { background: #c0c8d0; color: #888; }
+"""
+
+
+class TextRewritePanel(QWidget):
+    """Floating panel: paste text → AI rewrites → copy result. Independent of voice flow."""
+
+    def __init__(self, model_warmup: DesktopModelWarmup, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.model_warmup = model_warmup
+        self._thread: RewriteSelectionThread | None = None
+        self.setWindowTitle("文字整理")
+        self.setWindowIcon(QIcon())
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+        self.setMinimumSize(440, 380)
+        self.resize(480, 460)
+        self.setStyleSheet(PANEL_STYLE)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        input_label = QLabel("粘贴要整理的文字：")
+        layout.addWidget(input_label)
+
+        self.input_edit = QPlainTextEdit()
+        self.input_edit.setPlaceholderText("Ctrl+V 粘贴进来……")
+        self.input_edit.setMinimumHeight(120)
+        layout.addWidget(self.input_edit, stretch=1)
+
+        self.rewrite_btn = QPushButton("AI 整理 ↓")
+        self.rewrite_btn.setMinimumHeight(36)
+        self.rewrite_btn.clicked.connect(self._start_rewrite)
+        layout.addWidget(self.rewrite_btn)
+
+        output_label = QLabel("整理结果：")
+        layout.addWidget(output_label)
+
+        self.output_edit = QPlainTextEdit()
+        self.output_edit.setPlaceholderText("整理后的结果会出现在这里……")
+        self.output_edit.setReadOnly(True)
+        self.output_edit.setMinimumHeight(120)
+        layout.addWidget(self.output_edit, stretch=1)
+
+        self.copy_btn = QPushButton("复制结果")
+        self.copy_btn.setObjectName("copyBtn")
+        self.copy_btn.setMinimumHeight(36)
+        self.copy_btn.setEnabled(False)
+        self.copy_btn.clicked.connect(self._copy_result)
+        layout.addWidget(self.copy_btn)
+
+    def _start_rewrite(self) -> None:
+        text = self.input_edit.toPlainText().strip()
+        if not text:
+            return
+        if not self.model_warmup.is_ready:
+            self.output_edit.setPlainText("模型尚未加载完成，请稍等后重试。")
+            return
+        if self._thread is not None and self._thread.isRunning():
+            return
+        self.rewrite_btn.setEnabled(False)
+        self.rewrite_btn.setText("整理中…")
+        self.output_edit.clear()
+        self.copy_btn.setEnabled(False)
+        self._thread = RewriteSelectionThread(text, self.model_warmup)
+        self._thread.completed.connect(self._on_completed)
+        self._thread.failed.connect(self._on_failed)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _on_completed(self, result: str) -> None:
+        self._thread = None
+        self.output_edit.setPlainText(result)
+        self.rewrite_btn.setEnabled(True)
+        self.rewrite_btn.setText("AI 整理 ↓")
+        self.copy_btn.setEnabled(True)
+
+    def _on_failed(self, message: str) -> None:
+        self._thread = None
+        self.output_edit.setPlainText(f"整理失败：{message}")
+        self.rewrite_btn.setEnabled(True)
+        self.rewrite_btn.setText("AI 整理 ↓")
+
+    def _copy_result(self) -> None:
+        text = self.output_edit.toPlainText()
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self.copy_btn.setText("已复制 ✓")
+        QTimer.singleShot(1500, lambda: self.copy_btn.setText("复制结果"))
+
+    def show_and_raise(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        event.ignore()
+        self.hide()
 
 
 class ResultWindow(QMainWindow):
@@ -819,6 +999,8 @@ class DesktopController:
             model_warmup=model_warmup or DesktopModelWarmup(self.root, settings_provider=lambda: self.settings),
         )
         self._last_model_state = "unknown"
+        self.rewrite_panel = TextRewritePanel(self.window.model_warmup)
+        self.rewrite_panel.setWindowIcon(app_icon_for_root(self.root))
         self.tray = QSystemTrayIcon(app_icon_for_root(self.root), app)
         self.tray.setToolTip("Voice Prompt Tool")
         self.hotkey = GlobalHotkeyReceiver() if enable_hotkey and os.name == "nt" else None
@@ -826,6 +1008,7 @@ class DesktopController:
         if self.hotkey is not None:
             self.hotkey.activated.connect(lambda: self.handle_recording_hotkey(mode="ai"))
             self.hotkey.dictation_activated.connect(lambda: self.handle_recording_hotkey(mode="dictation"))
+            self.hotkey.rewrite_activated.connect(self.open_rewrite_panel)
             self.hotkey.register()
         self.tray.show()
         self.start_model_warmup(show_window=show_on_start)
@@ -838,6 +1021,9 @@ class DesktopController:
         self.model_status_timer.timeout.connect(self._refresh_model_status)
         self.model_status_timer.start()
 
+    def open_rewrite_panel(self) -> None:
+        self.rewrite_panel.show_and_raise()
+
     def _build_tray_menu(self) -> None:
         menu = QMenu()
         start_action = QAction("开始录音并整理", menu)
@@ -846,6 +1032,9 @@ class DesktopController:
         dictation_action = QAction("快速听写", menu)
         dictation_action.triggered.connect(lambda: self.handle_recording_hotkey(mode="dictation"))
         menu.addAction(dictation_action)
+        rewrite_action = QAction("整理文字...", menu)
+        rewrite_action.triggered.connect(self.open_rewrite_panel)
+        menu.addAction(rewrite_action)
         settings_action = QAction("设置", menu)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
@@ -917,7 +1106,7 @@ class DesktopController:
                 self.window.show_model_ready_status()
                 self.tray.showMessage(
                     "模型已加载完成",
-                    "现在可以使用 Ctrl+Space 或右 Alt。",
+                    "现在可以使用 Ctrl+Space、右 Alt、或 Ctrl+Shift+Space 整理选中文字。",
                     QSystemTrayIcon.MessageIcon.Information,
                     2500,
                 )
@@ -947,6 +1136,7 @@ class DesktopController:
         self.model_status_timer.stop()
         if self.hotkey is not None:
             self.hotkey.unregister()
+        self.rewrite_panel.deleteLater()
         self.window.shutdown()
         self.tray.hide()
 
