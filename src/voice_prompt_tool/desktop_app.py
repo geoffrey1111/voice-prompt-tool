@@ -1183,8 +1183,8 @@ class ResultWindow(QMainWindow):
             self._insert_in_progress = False
             self._maybe_start_replace()
             return
-        if retries < 3:
-            QTimer.singleShot(300, lambda: self._do_insert_with_retry(text, retries + 1))
+        if retries < 5:
+            QTimer.singleShot(400, lambda: self._do_insert_with_retry(text, retries + 1))
         else:
             # All insert attempts failed; still allow replace to proceed
             self._insert_in_progress = False
@@ -1215,8 +1215,8 @@ class ResultWindow(QMainWindow):
         text = self._pending_final_text
         self._pending_final_text = None
         self._pending_final_gen = None
-        # Small delay so the target window has time to process the paste before replace
-        QTimer.singleShot(200, lambda: self._do_replace_with_retry(text, gen, retries=0))
+        # Delay so user can see the ASR text before it gets replaced by the Qwen result
+        QTimer.singleShot(600, lambda: self._do_replace_with_retry(text, gen, retries=0))
 
     def _do_replace_with_retry(self, text: str, gen: int, retries: int = 0) -> None:
         if gen != self._replacement_generation:
@@ -1243,9 +1243,10 @@ class ResultWindow(QMainWindow):
     def _finish_dictation(self, result: VoicePromptResult) -> None:
         text = result.corrected_text or result.raw_text
         gen = self._replacement_generation
-        # Hide pill, then inject text after OS restores focus to target
+        # Hide pill, then inject text after OS restores focus to target.
+        # 250ms gives Windows time to send WM_ACTIVATE to WeChat before we inject.
         self._hide_pill()
-        QTimer.singleShot(100, lambda: self._inject_dictation(text, gen, retries=0))
+        QTimer.singleShot(250, lambda: self._inject_dictation(text, gen, retries=0))
 
     def _inject_dictation(self, text: str, gen: int, retries: int = 0) -> None:
         if gen != self._replacement_generation:
@@ -1254,8 +1255,8 @@ class ResultWindow(QMainWindow):
         if ok:
             self.last_activity_at = time.monotonic()
             return
-        if retries < 3:
-            QTimer.singleShot(300, lambda: self._inject_dictation(text, gen, retries + 1))
+        if retries < 5:
+            QTimer.singleShot(500, lambda: self._inject_dictation(text, gen, retries + 1))
 
     # ------------------------------------------------------------------ error
 

@@ -257,30 +257,75 @@ class TextInjector:
             return False
         if not self.backend.is_window(session.target_hwnd):
             return False
-        # Use force_foreground_window (AttachThreadInput bypass) so the paste
-        # reaches the target even when the foreground-lock has timed out.
         if not self.backend.force_foreground_window(session.target_hwnd):
             _dbg(f"insert_text: force_foreground_window failed for {session.target_hwnd}")
             return False
         time.sleep(0.10)
 
-        # Qt-based apps (e.g. WeChat) manage widget focus internally. SetForegroundWindow
-        # alone does not restore focus to the text widget — we need a real click.
-        # Detect Qt windows by class name prefix and post a click at the cursor position
-        # captured when the user first pressed the hotkey (where they were typing).
         target_cls = self.backend.get_window_class(session.target_hwnd)
         _dbg(f"insert_text: target={session.target_hwnd} class={target_cls!r} cursor=({session.cursor_x},{session.cursor_y})")
         if target_cls.startswith("Qt5") and session.cursor_x and session.cursor_y:
             self.backend.post_click_to_restore_focus(
                 session.target_hwnd, session.cursor_x, session.cursor_y
             )
-            time.sleep(0.12)  # let Qt process WM_LBUTTONDOWN and set widget focus
+            time.sleep(0.20)  # increased: give Qt more time to restore widget focus
 
-        _dbg(f"insert_text: pasting into {session.target_hwnd}, fg={ctypes.windll.user32.GetForegroundWindow()}")
+        # Sample text length before paste so we can verify the paste landed.
+        pre_length = self._sample_edit_lengths(session.target_hwnd)
+        _dbg(f"insert_text: pre_length={pre_length}, fg={ctypes.windll.user32.GetForegroundWindow()}")
+
         self.backend.paste_text(text)
+        time.sleep(0.12)  # let target window process the paste
+
+        # Verify paste landed when Win32/RichEdit controls are accessible.
+        # For Qt-only apps (e.g. WeChat) _sample_edit_lengths returns -1; we skip
+        # verification and trust the timing, but still don't mark session.inserted_text
+        # until we're as confident as possible.
+        if pre_length >= 0:
+            post_length = self._sample_edit_lengths(session.target_hwnd)
+            expected = pre_length + len(text)
+            _dbg(f"insert_text: post_length={post_length}, expected≈{expected}")
+            if abs(post_length - expected) > max(3, len(text) // 3):
+                _dbg("insert_text: verification FAILED — text did not land, will retry")
+                return False  # don't set inserted_text; caller will retry
+
         session.inserted_text = text
         session.inserted_at_input_tick = self.backend.get_last_input_tick()
         return True
+
+    def _sample_edit_lengths(self, hwnd: int) -> int:
+        """Total text length across accessible Win32/RichEdit children. -1 if none found.
+
+        Only counts controls whose class is in WindowsInputBackend._EDIT_CLASSES so that
+        Qt top-level HWNDs (which return window-title length from WM_GETTEXTLENGTH) don't
+        pollute the measurement.
+        """
+        focused = self.backend._get_focused_control(hwnd)
+        children = self.backend._find_edit_children(hwnd)
+        seen: set[int] = set()
+        total = 0
+        found = False
+
+        # Only include focused control if it's a known Edit class
+        candidates: list[int] = list(children)
+        if focused and focused not in seen:
+            cls_buf = ctypes.create_unicode_buffer(64)
+            ctypes.windll.user32.GetClassNameW(focused, cls_buf, 64)
+            if cls_buf.value in WindowsInputBackend._EDIT_CLASSES:
+                candidates.insert(0, focused)
+
+        for ctrl in candidates:
+            if not ctrl or ctrl in seen:
+                continue
+            seen.add(ctrl)
+            try:
+                n = ctypes.windll.user32.SendMessageW(ctrl, _WM_GETTEXTLENGTH, 0, 0)
+                if n >= 0:
+                    total += n
+                    found = True
+            except Exception:
+                pass
+        return total if found else -1
 
     def replace_inserted_text(self, session: DictationSession | None, text: str) -> bool:
         if session is None or not session.inserted_text or not text:
