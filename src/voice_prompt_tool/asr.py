@@ -58,6 +58,17 @@ class FasterWhisperTranscriber:
         )
         return self._model
 
+    def warm_up(self) -> None:
+        """Load model and run one silent inference to initialize CTranslate2 CPU kernels."""
+        import numpy as np
+        model = self._load_model()
+        silence = np.zeros(8000, dtype=np.float32)  # 0.5s silence at 16 kHz
+        try:
+            segments, _ = model.transcribe(silence, language=self.language, vad_filter=True)
+            list(segments)  # consume the generator so inference actually runs
+        except Exception:
+            pass
+
     def transcribe(self, audio_path: Path) -> str:
         path = Path(audio_path)
         if not path.exists():
