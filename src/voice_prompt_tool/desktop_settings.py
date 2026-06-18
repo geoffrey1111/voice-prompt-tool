@@ -10,8 +10,6 @@ from typing import Any
 VALID_REWRITE_STYLES = ("faithful", "concise", "semantic")
 VALID_IDLE_RELEASE_MINUTES = (0, 10, 30, 60)
 VALID_ASR_LANGUAGES = ("zh", "en")
-VALID_AI_HOTKEYS = ("ctrl+space", "ctrl+shift+space", "ctrl+shift+r", "ctrl+shift+v", "ctrl+shift+f")
-VALID_DICTATION_HOTKEYS = ("right_alt", "ctrl+shift+d", "ctrl+shift+w", "ctrl+shift+l")
 
 
 @dataclass
@@ -32,8 +30,8 @@ class DesktopSettings:
         settings.rewrite_style = _valid_rewrite_style(data.get("rewrite_style"))
         settings.start_with_windows = bool(data.get("start_with_windows", settings.start_with_windows))
         settings.asr_language = _valid_asr_language(data.get("asr_language"))
-        settings.hotkey_ai = _valid_hotkey(data.get("hotkey_ai"), VALID_AI_HOTKEYS, "ctrl+space")
-        settings.hotkey_dictation = _valid_hotkey(data.get("hotkey_dictation"), VALID_DICTATION_HOTKEYS, "right_alt")
+        settings.hotkey_ai = _valid_hotkey(data.get("hotkey_ai"), "ctrl+space")
+        settings.hotkey_dictation = _valid_hotkey(data.get("hotkey_dictation"), "right_alt")
         return settings
 
 
@@ -95,8 +93,11 @@ def _default_startup_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
-def _valid_hotkey(value: Any, valid: tuple, default: str) -> str:
-    if isinstance(value, str) and value in valid:
+_HOTKEY_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789+_")
+
+
+def _valid_hotkey(value: Any, default: str) -> str:
+    if isinstance(value, str) and value and all(c in _HOTKEY_CHARS for c in value):
         return value
     return default
 

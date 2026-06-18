@@ -424,22 +424,11 @@ class SettingsDialog(QDialog):
         self.language_combo.setToolTip(_t("settings_lang_tip", lang))
         form.addRow(_t("settings_lang_label", lang), self.language_combo)
 
-        from voice_prompt_tool.desktop_settings import VALID_AI_HOTKEYS, VALID_DICTATION_HOTKEYS
-        self.hotkey_ai_combo = QComboBox()
-        for hk in VALID_AI_HOTKEYS:
-            self.hotkey_ai_combo.addItem(_format_hotkey(hk), hk)
-        self.hotkey_ai_combo.setCurrentIndex(
-            max(0, self.hotkey_ai_combo.findData(self.settings.hotkey_ai))
-        )
-        form.addRow(_t("settings_hotkey_ai_label", lang), self.hotkey_ai_combo)
+        self.hotkey_ai_btn = HotkeyButton(self.settings.hotkey_ai, lang=lang)
+        form.addRow(_t("settings_hotkey_ai_label", lang), self.hotkey_ai_btn)
 
-        self.hotkey_dictation_combo = QComboBox()
-        for hk in VALID_DICTATION_HOTKEYS:
-            self.hotkey_dictation_combo.addItem(_format_hotkey(hk), hk)
-        self.hotkey_dictation_combo.setCurrentIndex(
-            max(0, self.hotkey_dictation_combo.findData(self.settings.hotkey_dictation))
-        )
-        form.addRow(_t("settings_hotkey_dictation_label", lang), self.hotkey_dictation_combo)
+        self.hotkey_dictation_btn = HotkeyButton(self.settings.hotkey_dictation, lang=lang)
+        form.addRow(_t("settings_hotkey_dictation_label", lang), self.hotkey_dictation_btn)
 
         layout.addLayout(form)
 
@@ -495,8 +484,8 @@ class SettingsDialog(QDialog):
         self.refresh_status()
 
     def accept(self) -> None:
-        new_ai_hotkey = str(self.hotkey_ai_combo.currentData())
-        new_dictation_hotkey = str(self.hotkey_dictation_combo.currentData())
+        new_ai_hotkey = self.hotkey_ai_btn.hotkey
+        new_dictation_hotkey = self.hotkey_dictation_btn.hotkey
         if new_ai_hotkey == new_dictation_hotkey:
             lang = self.settings.asr_language
             QMessageBox.warning(self, _t("settings_title", lang), _t("settings_hotkey_conflict", lang))
@@ -760,6 +749,103 @@ QPushButton#copyBtn {
 QPushButton#copyBtn:hover { background: #1e7e34; }
 QPushButton#copyBtn:disabled { background: #c0c8d0; color: #888; }
 """
+
+
+class HotkeyButton(QPushButton):
+    """Click to enter capture mode, then press any key combination to record it as a hotkey.
+
+    Supported combinations:
+    - Ctrl + key  (e.g. Ctrl+Space, Ctrl+Shift+R)
+    - Right Alt   (standalone)
+    Press Escape to cancel capture without changing the hotkey.
+    """
+
+    hotkey_changed = Signal(str)
+
+    def __init__(self, hotkey: str, lang: str = "zh", parent=None) -> None:
+        super().__init__(parent)
+        self._hotkey = hotkey
+        self._lang = lang
+        self._capturing = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMinimumWidth(170)
+        self._update_display()
+        self.clicked.connect(self._start_capture)
+
+    @property
+    def hotkey(self) -> str:
+        return self._hotkey
+
+    def _start_capture(self) -> None:
+        self._capturing = True
+        self.setText("按下快捷键…" if self._lang == "zh" else "Press keys…")
+        self.setFocus()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if not self._capturing:
+            return super().keyPressEvent(event)
+        key = event.key()
+
+        if key == Qt.Key.Key_Escape:
+            self._capturing = False
+            self._update_display()
+            return
+
+        # Right Alt — check native VK or extended scan code
+        if key == Qt.Key.Key_Alt:
+            native_vk = event.nativeVirtualKey()
+            native_scan = event.nativeScanCode()
+            if native_vk == 0xA5 or (native_scan & 0x100):  # VK_RMENU or extended alt
+                self._finish_capture("right_alt")
+            return  # ignore Left Alt
+
+        # Ignore other standalone modifier presses
+        if key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Meta):
+            return
+
+        # Build modifier prefix — Ctrl required for combos
+        mods = event.modifiers()
+        parts: list[str] = []
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            parts.append("ctrl")
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("shift")
+        if "ctrl" not in parts:
+            return  # combos without Ctrl are too risky; stay in capture mode
+
+        key_name = self._resolve_key(key, event.nativeVirtualKey())
+        if key_name:
+            parts.append(key_name)
+            self._finish_capture("+".join(parts))
+
+    def _finish_capture(self, hotkey: str) -> None:
+        self._hotkey = hotkey
+        self._capturing = False
+        self._update_display()
+        self.hotkey_changed.emit(hotkey)
+
+    @staticmethod
+    def _resolve_key(qt_key: int, native_vk: int) -> str | None:
+        vk_to_name = {v: k for k, v in _VK_FROM_NAME.items()}
+        if native_vk in vk_to_name:
+            return vk_to_name[native_vk]
+        # Qt key fallback
+        if 65 <= qt_key <= 90:   # Key_A … Key_Z match ASCII uppercase
+            return chr(qt_key + 32)
+        if 48 <= qt_key <= 57:   # Key_0 … Key_9
+            return str(qt_key - 48)
+        if qt_key == Qt.Key.Key_Space:
+            return "space"
+        return None
+
+    def _update_display(self) -> None:
+        self.setText(_format_hotkey(self._hotkey))
+
+    def focusOutEvent(self, event) -> None:  # type: ignore[override]
+        if self._capturing:
+            self._capturing = False
+            self._update_display()
+        super().focusOutEvent(event)
 
 
 class TextRewritePanel(QWidget):
