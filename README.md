@@ -18,16 +18,18 @@ Voice Prompt Tool sits in your system tray and listens for a hotkey. Press it in
 
 Two modes:
 
-| Mode | Hotkey | What it does |
-|------|--------|-------------|
+| Mode | Default Hotkey | What it does |
+|------|----------------|-------------|
 | **AI mode** | `Ctrl + Space` | Transcribes your speech, then rewrites it into clear, logical written text using a local Qwen3 model |
 | **Dictation mode** | `Right Alt` | Transcribes speech and appends it directly — no AI rewriting, faster |
+
+Both hotkeys are **fully configurable** in Settings.
 
 ### Why It's Different
 
 - **Fully offline** — ASR and AI both run locally. No API keys, no accounts, no data leaving your machine.
 - **Works in any input field** — injects text via Win32 API, so it works everywhere: chat apps, browsers, editors, terminals.
-- **Live replacement** — in AI mode, the raw transcript appears first, then gets selected and replaced by the polished version. The transition is instant and satisfying.
+- **Live replacement** — in AI mode, the raw transcript appears first, then gets visually selected and replaced by the polished version in one satisfying sweep.
 - **Faster than cloud-based alternatives** — local inference is significantly faster than API round-trips.
 
 ### Perfect For
@@ -45,6 +47,16 @@ Two modes:
 | English | Whisper medium | Switch in Settings → Language |
 
 Switch language in **tray → Settings → Language / 语言**. Switching to English downloads the Whisper medium model (~1.5 GB) on first use.
+
+### Configuring Hotkeys
+
+Go to **tray icon → Settings → Hotkeys**.
+
+Click the button next to the hotkey you want to change. It will enter capture mode — just press the key combination you want. Press `Esc` to cancel.
+
+- **AI mode hotkey**: must include `Ctrl` (e.g. `Ctrl + Space`, `Ctrl + Q`)
+- **Dictation hotkey**: can be `Right Alt`, or any `Ctrl`-based combo
+- The two hotkeys cannot be the same
 
 ### Setup
 
@@ -73,8 +85,8 @@ Or double-click `启动 Voice Prompt Tool.exe`.
 - **GUI**: PySide6 (Qt), frameless pill overlay
 - **ASR**: FunASR / SenseVoice · faster-whisper
 - **AI inference**: Ollama + Qwen3
-- **Text injection**: Win32 API (SendMessage)
-- **Global hotkeys**: WH_KEYBOARD_LL low-level keyboard hook
+- **Text injection**: Win32 API (SendMessage / SendInput), with paste verification and auto-retry
+- **Global hotkeys**: WH_KEYBOARD_LL low-level keyboard hook, fully configurable
 
 ---
 
@@ -84,23 +96,24 @@ Or double-click `启动 Voice Prompt Tool.exe`.
 
 - **任意输入框可用** — 微信、浏览器、记事本、代码编辑器，按键即用
 - **两种模式**：AI 润色模式 + 极速听写模式
+- **快捷键自定义** — 在设置里录制任意组合键，不再绑死默认按键
 - **完全本地运行** — 语音识别与 AI 均在本机执行，无需联网，数据不外传
 - **后台常驻无感知** — 系统托盘驻留，不占前台窗口
 - **支持中英文** — 中文用 SenseVoice，英文用 Whisper，设置中切换
 
 ### 两种使用模式
 
-#### AI 模式（Ctrl + Space）
+#### AI 模式（默认：Ctrl + Space）
 
 口语 → AI 整理 → 书面文字，自动写入当前输入框。
 
 | 步骤 | 说明 |
 |------|------|
-| 1 | 光标定位到任意输入框，按 **Ctrl + Space** 开始录音 |
+| 1 | 光标定位到任意输入框，按 **AI 模式快捷键** 开始录音 |
 | 2 | 自然说话，屏幕底部出现悬浮状态条「AI模式（录音中）」 |
-| 3 | 再按 **Ctrl + Space** 停止，ASR 转录结果先写入输入框 |
+| 3 | 再按一次快捷键停止，ASR 转录结果先写入输入框 |
 | 4 | AI 自动润色，将口语改写为逻辑清晰的书面表达 |
-| 5 | 润色后的文字替换原转录内容，状态条消失 |
+| 5 | 润色后的文字全选替换原转录内容，状态条消失 |
 
 **示例：**
 
@@ -108,15 +121,25 @@ Or double-click `启动 Voice Prompt Tool.exe`.
 >
 > 输出：「用户登录模块存在体验问题：每次会话结束后需重新输入密码，缺少登录态保持机制，建议增加"记住我"或 token 持久化功能。」
 
-#### 听写模式（右 Alt）
+#### 听写模式（默认：右 Alt）
 
 语音原文直接追加到当前输入位置，不经过 AI 处理，速度更快。
 
 | 步骤 | 说明 |
 |------|------|
-| 1 | 光标定位到任意输入框，按**右 Alt** 开始录音 |
+| 1 | 光标定位到任意输入框，按**听写快捷键**开始录音 |
 | 2 | 说话，状态条显示「听写（录音中）」 |
-| 3 | 再按**右 Alt** 停止，转录文字直接追加，状态条消失 |
+| 3 | 再按一次停止，转录文字直接追加，状态条消失 |
+
+### 自定义快捷键
+
+右键点击托盘图标 → **设置 / Settings** → **快捷键** 区域。
+
+点击快捷键旁边的按钮，进入录制模式后直接按下想要的组合键即可。按 `Esc` 取消。
+
+- **AI 模式快捷键**：必须包含 `Ctrl`（如 `Ctrl + Space`、`Ctrl + Q`）
+- **听写快捷键**：可以是右 Alt，也可以是任意带 Ctrl 的组合
+- 两个快捷键不能相同
 
 ### 典型使用场景
 
@@ -152,8 +175,8 @@ Or double-click `启动 Voice Prompt Tool.exe`.
 - **GUI**：PySide6（Qt）
 - **语音识别**：FunASR / SenseVoice · faster-whisper
 - **AI 推理**：Ollama + Qwen3
-- **文字注入**：Win32 API（SendMessage）
-- **全局热键**：WH_KEYBOARD_LL 低级键盘钩子
+- **文字注入**：Win32 API（SendMessage / SendInput），含粘贴验证与自动重试
+- **全局热键**：WH_KEYBOARD_LL 低级键盘钩子，支持完全自定义
 
 ---
 
