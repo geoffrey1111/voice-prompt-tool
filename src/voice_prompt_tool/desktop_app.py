@@ -62,7 +62,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "notif_loading_title":      "模型正在加载",
         "notif_loading_body":       "加载完成后才能开始录音。",
         "notif_ready_title":        "模型已加载完成",
-        "notif_ready_body":         "现在可以使用 Ctrl+Space、右 Alt、或 Ctrl+Shift+Space 整理文字。",
+        "notif_ready_body":         "现在可以使用快捷键开始录音或听写。",
         "notif_released_title":     "模型已释放",
         "notif_released_body":      "如需继续使用，请先预热模型；热键会先进入加载状态。",
         "tooltip_loading":          "Voice Prompt Tool - 模型加载中",
@@ -86,6 +86,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_style_semantic":  "强理解转述（推荐）",
         "settings_lang_label":      "语言 / Language",
         "settings_lang_tip":        "切换语言后需重新加载模型。English 模式下载 Whisper medium 模型（约 1.5 GB）。",
+        "settings_hotkey_ai_label":        "AI 模式快捷键",
+        "settings_hotkey_dictation_label": "听写模式快捷键",
+        "settings_hotkey_conflict":        "AI 快捷键和听写快捷键不能相同，请重新选择。",
         "settings_btn_refresh":     "刷新状态",
         "settings_btn_load":        "预热模型",
         "settings_btn_release":     "释放模型",
@@ -121,7 +124,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "notif_loading_title":      "Loading Models",
         "notif_loading_body":       "Please wait until models are loaded.",
         "notif_ready_title":        "Models Ready",
-        "notif_ready_body":         "Ready: Ctrl+Space, Right Alt, or Ctrl+Shift+Space.",
+        "notif_ready_body":         "Ready. Use your configured hotkeys to record or dictate.",
         "notif_released_title":     "Models Released",
         "notif_released_body":      "Reload models from the tray menu to continue.",
         "tooltip_loading":          "Voice Prompt Tool - Loading",
@@ -145,6 +148,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_style_semantic":  "Semantic (Recommended)",
         "settings_lang_label":      "Language / 语言",
         "settings_lang_tip":        "Switching language reloads models. English mode downloads Whisper medium (~1.5 GB).",
+        "settings_hotkey_ai_label":        "AI Mode Hotkey",
+        "settings_hotkey_dictation_label": "Dictation Hotkey",
+        "settings_hotkey_conflict":        "AI hotkey and Dictation hotkey must be different. Please choose again.",
         "settings_btn_refresh":     "Refresh",
         "settings_btn_load":        "Load Models",
         "settings_btn_release":     "Release",
@@ -190,6 +196,50 @@ VK_RSHIFT = 0xA1
 HOTKEY_AI = 61015
 HOTKEY_DICTATION = 61016
 SYNTHETIC_EXTRA_INFO = 1  # marker on our own SendInput events so the hook skips them
+
+# ---------------------------------------------------------------------------
+# Hotkey parsing helpers
+# ---------------------------------------------------------------------------
+_VK_FROM_NAME: dict[str, int] = {
+    "space": VK_SPACE,
+    "enter": 0x0D,
+    "tab": 0x09,
+    "backspace": 0x08,
+    **{chr(0x41 + i).lower(): 0x41 + i for i in range(26)},   # a=0x41 … z=0x5A
+    **{str(i): 0x30 + i for i in range(10)},                   # 0–9
+    **{f"f{i}": 0x6F + i for i in range(1, 13)},               # f1=0x70 … f12=0x7B
+}
+
+_MOD_NAMES = frozenset({"ctrl", "shift", "alt"})
+
+
+def _parse_hotkey(s: str) -> tuple[frozenset[str], int] | None:
+    """Parse "ctrl+space" → (frozenset({"ctrl"}), VK_SPACE). None if invalid."""
+    parts = [p.strip().lower() for p in s.split("+") if p.strip()]
+    mods: set[str] = set()
+    vk: int | None = None
+    for p in parts:
+        if p in _MOD_NAMES:
+            mods.add(p)
+        elif p in _VK_FROM_NAME:
+            if vk is not None:
+                return None
+            vk = _VK_FROM_NAME[p]
+        else:
+            return None
+    if vk is None:
+        return None
+    return frozenset(mods), vk
+
+
+def _format_hotkey(s: str) -> str:
+    """Human-readable label: "ctrl+space" → "Ctrl + Space", "right_alt" → "Right Alt"."""
+    if s == "right_alt":
+        return "Right Alt"
+    _display = {"ctrl": "Ctrl", "shift": "Shift", "alt": "Alt", "space": "Space",
+                "enter": "Enter", "tab": "Tab", "backspace": "Backspace"}
+    parts = [p.strip().lower() for p in s.split("+") if p.strip()]
+    return " + ".join(_display.get(p, p.upper() if len(p) == 1 else p.title()) for p in parts)
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 # On 64-bit Windows, WPARAM/LPARAM/LRESULT are 64-bit; ctypes.wintypes uses c_long (32-bit)
@@ -374,6 +424,23 @@ class SettingsDialog(QDialog):
         self.language_combo.setToolTip(_t("settings_lang_tip", lang))
         form.addRow(_t("settings_lang_label", lang), self.language_combo)
 
+        from voice_prompt_tool.desktop_settings import VALID_AI_HOTKEYS, VALID_DICTATION_HOTKEYS
+        self.hotkey_ai_combo = QComboBox()
+        for hk in VALID_AI_HOTKEYS:
+            self.hotkey_ai_combo.addItem(_format_hotkey(hk), hk)
+        self.hotkey_ai_combo.setCurrentIndex(
+            max(0, self.hotkey_ai_combo.findData(self.settings.hotkey_ai))
+        )
+        form.addRow(_t("settings_hotkey_ai_label", lang), self.hotkey_ai_combo)
+
+        self.hotkey_dictation_combo = QComboBox()
+        for hk in VALID_DICTATION_HOTKEYS:
+            self.hotkey_dictation_combo.addItem(_format_hotkey(hk), hk)
+        self.hotkey_dictation_combo.setCurrentIndex(
+            max(0, self.hotkey_dictation_combo.findData(self.settings.hotkey_dictation))
+        )
+        form.addRow(_t("settings_hotkey_dictation_label", lang), self.hotkey_dictation_combo)
+
         layout.addLayout(form)
 
         self.status_label = QLabel()
@@ -428,11 +495,19 @@ class SettingsDialog(QDialog):
         self.refresh_status()
 
     def accept(self) -> None:
+        new_ai_hotkey = str(self.hotkey_ai_combo.currentData())
+        new_dictation_hotkey = str(self.hotkey_dictation_combo.currentData())
+        if new_ai_hotkey == new_dictation_hotkey:
+            lang = self.settings.asr_language
+            QMessageBox.warning(self, _t("settings_title", lang), _t("settings_hotkey_conflict", lang))
+            return
         self.settings.start_with_windows = self.startup_checkbox.isChecked()
         self.settings.auto_prewarm = True
         self.settings.idle_release_minutes = int(self.idle_release_combo.currentData())
         self.settings.rewrite_style = str(self.rewrite_style_combo.currentData())
         self.settings.asr_language = str(self.language_combo.currentData())
+        self.settings.hotkey_ai = new_ai_hotkey
+        self.settings.hotkey_dictation = new_dictation_hotkey
         if self.settings.start_with_windows:
             self.startup_registration.enable()
         else:
@@ -442,19 +517,43 @@ class SettingsDialog(QDialog):
 
 
 class RightAltKeyboardHook(QObject):
-    activated = Signal()          # right Alt pressed
-    ctrl_space = Signal()         # Ctrl+Space pressed
-    ctrl_shift_space = Signal()   # Ctrl+Shift+Space pressed
+    activated = Signal()    # dictation hotkey pressed
+    ctrl_space = Signal()   # AI hotkey pressed
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        ai_hotkey: str = "ctrl+space",
+        dictation_hotkey: str = "right_alt",
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._hook_handle = None
-        self._right_alt_down = False
         self._ctrl_down = False
         self._shift_down = False
-        self._ctrl_space_down = False
-        self._ctrl_shift_space_down = False
+        self._ai_down = False
+        self._dictation_combo_down = False
+        self._right_alt_down = False
         self._callback = HOOK_CALLBACK(self._keyboard_proc)
+        self.set_hotkeys(ai_hotkey, dictation_hotkey)
+
+    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str) -> None:
+        parsed_ai = _parse_hotkey(ai_hotkey)
+        self._ai_mods: frozenset[str] = parsed_ai[0] if parsed_ai else frozenset({"ctrl"})
+        self._ai_vk: int = parsed_ai[1] if parsed_ai else VK_SPACE
+
+        self._dictation_is_right_alt = dictation_hotkey == "right_alt"
+        if self._dictation_is_right_alt:
+            self._dictation_mods: frozenset[str] = frozenset()
+            self._dictation_vk: int | None = None
+        else:
+            parsed_d = _parse_hotkey(dictation_hotkey)
+            self._dictation_mods = parsed_d[0] if parsed_d else frozenset()
+            self._dictation_vk = parsed_d[1] if parsed_d else None
+
+        # Reset tracking state when hotkeys change
+        self._ai_down = False
+        self._dictation_combo_down = False
+        self._right_alt_down = False
 
     def install(self) -> None:
         if self._hook_handle:
@@ -480,73 +579,69 @@ class RightAltKeyboardHook(QObject):
         if n_code >= 0 and l_param:
             event = KBDLLHOOKSTRUCT.from_address(int(l_param))
             if event.dwExtraInfo == SYNTHETIC_EXTRA_INFO:
-                # Our own synthetic keystroke — pass through without processing
                 return ctypes.windll.user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
             if self._handle_key_event(int(event.vkCode), int(event.flags), int(w_param)):
-                return 1  # suppress right Alt so it never reaches the target text field
+                return 1
         return ctypes.windll.user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
 
     def _handle_key_event(self, vk_code: int, flags: int, message: int) -> bool:
-        # Re-sync _ctrl_down with hardware state each event to prevent stuck modifier.
-        # GetAsyncKeyState returns bit 15 set if the key is physically held down.
         actual_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
 
-        # Track Ctrl key state (never suppress Ctrl itself)
         if vk_code in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
-            if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                self._ctrl_down = True
-            elif message in (WM_KEYUP, WM_SYSKEYUP):
-                self._ctrl_down = False
+            self._ctrl_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
             return False
 
-        # Track Shift key state (never suppress Shift itself)
         if vk_code in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
-            if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                self._shift_down = True
-            elif message in (WM_KEYUP, WM_SYSKEYUP):
-                self._shift_down = False
+            self._shift_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
             return False
 
-        # If hardware says Ctrl is not held but our flag says it is, reset the flag.
         if self._ctrl_down and not actual_ctrl:
             self._ctrl_down = False
-            self._ctrl_space_down = False
-            self._ctrl_shift_space_down = False
+            self._ai_down = False
+            self._dictation_combo_down = False
 
-        # Ctrl+Shift+Space / Ctrl+Space — handled here instead of RegisterHotKey so IME can't block it
-        if vk_code == VK_SPACE:
-            if self._ctrl_down and message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                if self._shift_down:
-                    if not self._ctrl_shift_space_down:
-                        self._ctrl_shift_space_down = True
-                        self.ctrl_shift_space.emit()
-                else:
-                    if not self._ctrl_space_down:
-                        self._ctrl_space_down = True
-                        self.ctrl_space.emit()
-                return True  # suppress Space while Ctrl held
-            if self._ctrl_space_down and message in (WM_KEYUP, WM_SYSKEYUP):
-                self._ctrl_space_down = False
-                return True  # suppress the matching key-up
-            if self._ctrl_shift_space_down and message in (WM_KEYUP, WM_SYSKEYUP):
-                self._ctrl_shift_space_down = False
+        is_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
+        is_up = message in (WM_KEYUP, WM_SYSKEYUP)
+
+        # AI hotkey
+        if vk_code == self._ai_vk:
+            if is_down and self._mods_match(self._ai_mods) and not self._ai_down:
+                self._ai_down = True
+                self.ctrl_space.emit()
                 return True
-            return False
+            if is_up and self._ai_down:
+                self._ai_down = False
+                return True
 
-        # Right Alt
-        if not self._is_right_alt(vk_code, flags):
-            return False
-        if message in (WM_KEYDOWN, WM_SYSKEYDOWN):
-            if self._right_alt_down:
-                return True  # suppress repeated key-down events too
-            self._right_alt_down = True
-            self.activated.emit()
-            return True
-        if message in (WM_KEYUP, WM_SYSKEYUP):
-            was_down = self._right_alt_down
-            self._right_alt_down = False
-            return was_down  # suppress key-up only if we suppressed the key-down
+        # Dictation combo hotkey (non-right-alt)
+        if (not self._dictation_is_right_alt
+                and self._dictation_vk is not None
+                and vk_code == self._dictation_vk):
+            if is_down and self._mods_match(self._dictation_mods) and not self._dictation_combo_down:
+                self._dictation_combo_down = True
+                self.activated.emit()
+                return True
+            if is_up and self._dictation_combo_down:
+                self._dictation_combo_down = False
+                return True
+
+        # Right Alt dictation
+        if self._dictation_is_right_alt and self._is_right_alt(vk_code, flags):
+            if is_down:
+                if self._right_alt_down:
+                    return True
+                self._right_alt_down = True
+                self.activated.emit()
+                return True
+            if is_up:
+                was_down = self._right_alt_down
+                self._right_alt_down = False
+                return was_down
+
         return False
+
+    def _mods_match(self, required: frozenset[str]) -> bool:
+        return self._ctrl_down == ("ctrl" in required) and self._shift_down == ("shift" in required)
 
     @staticmethod
     def _is_right_alt(vk_code: int, flags: int) -> bool:
@@ -556,16 +651,16 @@ class RightAltKeyboardHook(QObject):
 class GlobalHotkeyReceiver(QWidget):
     activated = Signal()
     dictation_activated = Signal()
-    rewrite_activated = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, ai_hotkey: str = "ctrl+space", dictation_hotkey: str = "right_alt") -> None:
         super().__init__()
         self._registered = False
-        self._right_alt_hook = RightAltKeyboardHook(self)
-        self._right_alt_hook.activated.connect(self.dictation_activated.emit)
-        # Ctrl+Space is now handled in the low-level hook (bypasses IME interception)
+        self._right_alt_hook = RightAltKeyboardHook(ai_hotkey, dictation_hotkey, self)
         self._right_alt_hook.ctrl_space.connect(self.activated.emit)
-        self._right_alt_hook.ctrl_shift_space.connect(self.rewrite_activated.emit)
+        self._right_alt_hook.activated.connect(self.dictation_activated.emit)
+
+    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str) -> None:
+        self._right_alt_hook.set_hotkeys(ai_hotkey, dictation_hotkey)
 
     def register(self) -> None:
         if self._registered:
@@ -1174,12 +1269,14 @@ class DesktopController:
         self.rewrite_panel.setWindowIcon(app_icon_for_root(self.root))
         self.tray = QSystemTrayIcon(app_icon_for_root(self.root), app)
         self.tray.setToolTip("Voice Prompt Tool")
-        self.hotkey = GlobalHotkeyReceiver() if enable_hotkey and os.name == "nt" else None
+        self.hotkey = (
+            GlobalHotkeyReceiver(self.settings.hotkey_ai, self.settings.hotkey_dictation)
+            if enable_hotkey and os.name == "nt" else None
+        )
         self._build_tray_menu()
         if self.hotkey is not None:
             self.hotkey.activated.connect(lambda: self.handle_recording_hotkey(mode="ai"))
             self.hotkey.dictation_activated.connect(lambda: self.handle_recording_hotkey(mode="dictation"))
-            self.hotkey.rewrite_activated.connect(self.open_rewrite_panel)
             self.hotkey.register()
         self.tray.show()
         self.start_model_warmup(show_window=show_on_start)
@@ -1232,14 +1329,22 @@ class DesktopController:
     def open_settings(self) -> None:
         previous_rewrite_style = self.settings.rewrite_style
         previous_asr_language = self.settings.asr_language
-        dialog = SettingsDialog(
-            root=self.root,
-            settings=self.settings,
-            model_warmup=self.window.model_warmup,
-            startup_registration=self.startup_registration,
-            parent=None,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if self.hotkey is not None:
+            self.hotkey.unregister()
+        try:
+            dialog = SettingsDialog(
+                root=self.root,
+                settings=self.settings,
+                model_warmup=self.window.model_warmup,
+                startup_registration=self.startup_registration,
+                parent=None,
+            )
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            if self.hotkey is not None:
+                self.hotkey.set_hotkeys(self.settings.hotkey_ai, self.settings.hotkey_dictation)
+                self.hotkey.register()
+        if not accepted:
             return
         lang_changed = self.settings.asr_language != previous_asr_language
         if self.settings.rewrite_style != previous_rewrite_style or lang_changed:
