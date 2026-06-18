@@ -37,12 +37,14 @@ class OllamaPromptRewriter:
         endpoint: str = "http://127.0.0.1:11434",
         keep_alive: int | str = 0,
         rewrite_style: str = "semantic",
+        language: str = "zh",
         post_json: Callable[[str, dict], str] = _post_json,
     ) -> None:
         self.model = model
         self.endpoint = endpoint.rstrip("/")
         self.keep_alive = keep_alive
         self.rewrite_style = rewrite_style
+        self.language = language
         self._post_json = post_json
 
     def rewrite(self, text: str) -> str:
@@ -75,6 +77,11 @@ class OllamaPromptRewriter:
         return result
 
     def _build_prompt(self, text: str) -> str:
+        if self.language == "en":
+            return self._build_english_prompt(text)
+        return self._build_chinese_prompt(text)
+
+    def _build_chinese_prompt(self, text: str) -> str:
         if self.rewrite_style == "faithful":
             instruction = (
                 "把下面口述做忠实整理，尽量保留原意、信息顺序和表达重心。只输出整理后的正文，不要解释。\n"
@@ -96,3 +103,30 @@ class OllamaPromptRewriter:
                 "优先合并成一个自然段，内容较多时最多分成三个自然段。"
             )
         return f"{instruction}\n\n口述：{text}\n\n整理后："
+
+    def _build_english_prompt(self, text: str) -> str:
+        if self.rewrite_style == "faithful":
+            instruction = (
+                "Faithfully clean up the spoken text below. Preserve the original meaning, order, and emphasis. "
+                "Only remove filler words, pauses, obvious repetition, and recognition noise. "
+                "Do not compress important details or add new information. "
+                "Retain all facts, numbers, units, conditions, preferences, negations, and uncertainties. "
+                "Output only the cleaned text, no explanations."
+            )
+        elif self.rewrite_style == "semantic":
+            instruction = (
+                "You are a skilled English editor. Understand the speaker's true intent and rewrite the spoken text below "
+                "into clear, logical, complete written English that can be sent directly to an AI or another person. "
+                "Do not paraphrase sentence by sentence; reorder, merge, and complete the structure as needed. "
+                "Retain all facts, numbers, units, conditions, preferences, negations, and uncertainties. "
+                "Do not add new information or make decisions for the speaker. "
+                "Output only the rewritten text, no explanations."
+            )
+        else:
+            instruction = (
+                "Clean up the spoken text below into concise, accurate, natural English. "
+                "Remove filler words, pauses, and repetition. Retain all facts and key details. "
+                "Do not add new information. Prefer one paragraph; use at most three if the content is long. "
+                "Output only the cleaned text, no explanations."
+            )
+        return f"{instruction}\n\nSpoken: {text}\n\nCleaned:"

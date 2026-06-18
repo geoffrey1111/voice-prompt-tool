@@ -231,6 +231,16 @@ class SettingsDialog(QDialog):
         self.rewrite_style_combo.setCurrentIndex(max(0, self.rewrite_style_combo.findData(self.settings.rewrite_style)))
         form.addRow("整理强度", self.rewrite_style_combo)
 
+        self.language_combo = QComboBox()
+        for label, value in (
+            ("中文（SenseVoice · 推荐）", "zh"),
+            ("English（Whisper medium）", "en"),
+        ):
+            self.language_combo.addItem(label, value)
+        self.language_combo.setCurrentIndex(max(0, self.language_combo.findData(self.settings.asr_language)))
+        self.language_combo.setToolTip("切换语言后需重新加载模型。English 模式下载 Whisper medium 模型（约 1.5 GB）。")
+        form.addRow("语言 / Language", self.language_combo)
+
         layout.addLayout(form)
 
         self.status_label = QLabel()
@@ -286,6 +296,7 @@ class SettingsDialog(QDialog):
         self.settings.auto_prewarm = True
         self.settings.idle_release_minutes = int(self.idle_release_combo.currentData())
         self.settings.rewrite_style = str(self.rewrite_style_combo.currentData())
+        self.settings.asr_language = str(self.language_combo.currentData())
         if self.settings.start_with_windows:
             self.startup_registration.enable()
         else:
@@ -856,6 +867,7 @@ class DesktopController:
 
     def open_settings(self) -> None:
         previous_rewrite_style = self.settings.rewrite_style
+        previous_asr_language = self.settings.asr_language
         dialog = SettingsDialog(
             root=self.root,
             settings=self.settings,
@@ -865,7 +877,7 @@ class DesktopController:
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if self.settings.rewrite_style != previous_rewrite_style:
+        if self.settings.rewrite_style != previous_rewrite_style or self.settings.asr_language != previous_asr_language:
             self.window.model_warmup.release()
         if not self.window.model_warmup.is_ready:
             self.start_model_warmup(show_window=True)

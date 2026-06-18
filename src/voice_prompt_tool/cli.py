@@ -4,7 +4,13 @@ import argparse
 import os
 from pathlib import Path
 
-from voice_prompt_tool.asr import FasterWhisperTranscriber
+from voice_prompt_tool.asr import (
+    DEFAULT_HOTWORDS,
+    DEFAULT_INITIAL_PROMPT,
+    ENGLISH_HOTWORDS,
+    ENGLISH_INITIAL_PROMPT,
+    FasterWhisperTranscriber,
+)
 from voice_prompt_tool.clipboard import copy_text
 from voice_prompt_tool.ollama_rewriter import OllamaPromptRewriter, OllamaUnavailable
 from voice_prompt_tool.ollama_transcript_corrector import OllamaTranscriptCorrector
@@ -36,11 +42,11 @@ def format_result(result: VoicePromptResult) -> str:
     )
 
 
-def build_rewriter(model: str, use_ollama: bool, keep_alive: int | str = 0, rewrite_style: str = "semantic"):
+def build_rewriter(model: str, use_ollama: bool, keep_alive: int | str = 0, rewrite_style: str = "semantic", language: str = "zh"):
     if not use_ollama:
         return polish_spoken_text
 
-    rewriter_kwargs = {}
+    rewriter_kwargs: dict = {"language": language}
     if keep_alive != 0:
         rewriter_kwargs["keep_alive"] = keep_alive
     if rewrite_style != "concise":
@@ -74,6 +80,7 @@ def build_corrector(model: str, use_ollama: bool):
 
 
 def build_transcriber(args: argparse.Namespace, root: Path):
+    language = getattr(args, "asr_language", "zh")
     if args.asr_backend == "sensevoice":
         model_dir = Path(
             os.environ.get(
@@ -85,15 +92,20 @@ def build_transcriber(args: argparse.Namespace, root: Path):
         return SenseVoiceTranscriber(
             model_dir=model_dir,
             device=args.asr_device,
+            language=language,
             recordings_dir=root / "recordings",
             recordings_ascii_dir=Path(recordings_ascii_dir) if recordings_ascii_dir else None,
         )
 
+    is_english = language == "en"
     return FasterWhisperTranscriber(
         model_size=args.whisper_model,
         cache_dir=root / "cache" / "faster-whisper",
         device=args.asr_device,
         compute_type=args.asr_compute_type,
+        language=language,
+        initial_prompt=ENGLISH_INITIAL_PROMPT if is_english else DEFAULT_INITIAL_PROMPT,
+        hotwords=ENGLISH_HOTWORDS if is_english else DEFAULT_HOTWORDS,
     )
 
 

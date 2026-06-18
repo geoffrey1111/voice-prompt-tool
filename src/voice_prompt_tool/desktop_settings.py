@@ -9,6 +9,7 @@ from typing import Any
 
 VALID_REWRITE_STYLES = ("faithful", "concise", "semantic")
 VALID_IDLE_RELEASE_MINUTES = (0, 10, 30, 60)
+VALID_ASR_LANGUAGES = ("zh", "en")
 
 
 @dataclass
@@ -17,6 +18,7 @@ class DesktopSettings:
     idle_release_minutes: int = 0
     rewrite_style: str = "semantic"
     start_with_windows: bool = False
+    asr_language: str = "zh"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DesktopSettings":
@@ -25,6 +27,7 @@ class DesktopSettings:
         settings.idle_release_minutes = _valid_idle_release_minutes(data.get("idle_release_minutes"))
         settings.rewrite_style = _valid_rewrite_style(data.get("rewrite_style"))
         settings.start_with_windows = bool(data.get("start_with_windows", settings.start_with_windows))
+        settings.asr_language = _valid_asr_language(data.get("asr_language"))
         return settings
 
 
@@ -90,6 +93,12 @@ def _valid_rewrite_style(value: Any) -> str:
     if isinstance(value, str) and value in VALID_REWRITE_STYLES:
         return value
     return "semantic"
+
+
+def _valid_asr_language(value: Any) -> str:
+    if isinstance(value, str) and value in VALID_ASR_LANGUAGES:
+        return value
+    return "zh"
 
 
 def _valid_idle_release_minutes(value: Any) -> int:

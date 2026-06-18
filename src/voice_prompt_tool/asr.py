@@ -8,8 +8,13 @@ DEFAULT_INITIAL_PROMPT = (
     "以下是普通话口述，可能包含 Codex、Claude Code、Cloud Code、ChatGPT、GPT、Blender、3D、JSON、"
     "面数、头部、身体、下身、流程图、账号、麦克风、灵敏度。请准确转写数字和英文术语。"
 )
-
 DEFAULT_HOTWORDS = "Codex Claude Code Cloud Code ChatGPT GPT Blender 3D JSON 面数 头部 身体 下身 流程图 账号 麦克风 灵敏度"
+
+ENGLISH_INITIAL_PROMPT = (
+    "The following is spoken English and may include technical terms: "
+    "Claude, Claude Code, ChatGPT, GPT, Blender, JSON, API, GitHub, microphone."
+)
+ENGLISH_HOTWORDS = "Claude ChatGPT GPT Blender JSON API GitHub microphone"
 
 
 class FasterWhisperTranscriber:

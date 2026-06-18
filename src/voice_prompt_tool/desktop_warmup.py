@@ -32,12 +32,23 @@ def ollama_keep_alive_for_settings(settings: DesktopSettings) -> str:
 def build_warmup_bundle(root: Path, settings: DesktopSettings | None = None) -> WarmupBundle:
     root = Path(root)
     settings = settings or DesktopSettings()
-    args = argparse.Namespace(
-        asr_backend="sensevoice",
-        asr_device="cpu",
-        asr_compute_type="int8",
-        whisper_model="large-v3",
-    )
+    language = settings.asr_language
+    if language == "en":
+        args = argparse.Namespace(
+            asr_backend="whisper",
+            asr_device="cpu",
+            asr_compute_type="int8",
+            whisper_model="medium",
+            asr_language="en",
+        )
+    else:
+        args = argparse.Namespace(
+            asr_backend="sensevoice",
+            asr_device="cpu",
+            asr_compute_type="int8",
+            whisper_model="large-v3",
+            asr_language="zh",
+        )
     transcriber = build_transcriber(args, root)
     return WarmupBundle(
         transcriber=transcriber,
@@ -48,6 +59,7 @@ def build_warmup_bundle(root: Path, settings: DesktopSettings | None = None) -> 
             use_ollama=True,
             keep_alive=ollama_keep_alive_for_settings(settings),
             rewrite_style=settings.rewrite_style,
+            language=language,
         ),
         ollama_manager=OllamaServiceManager(root),
     )
