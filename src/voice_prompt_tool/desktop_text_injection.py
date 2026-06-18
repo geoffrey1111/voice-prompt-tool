@@ -208,8 +208,11 @@ class WindowsInputBackend:
 
         seen: set[int] = set()
         candidates: list[int] = []
-        for hwnd in [focused, *self._find_edit_children(target_hwnd), target_hwnd]:
-            if hwnd and hwnd not in seen:
+        # Deliberately exclude target_hwnd itself: WM_GETTEXTLENGTH on a non-Edit top-level
+        # window returns the window-title length, which can accidentally satisfy the length
+        # check for short ASR texts and cause a false-positive (silent no-op "replacement").
+        for hwnd in [focused, *self._find_edit_children(target_hwnd)]:
+            if hwnd and hwnd != target_hwnd and hwnd not in seen:
                 candidates.append(hwnd)
                 seen.add(hwnd)
 
@@ -340,15 +343,16 @@ class TextInjector:
 
         _dbg(f"replace_inserted_text: target={target_hwnd}, old_length={old_length}, fg={ctypes.windll.user32.GetForegroundWindow()}")
 
-        # Strategy 1: EM_SETSEL + EM_REPLACESEL — works without stealing focus,
-        # compatible with standard Win32/RichEdit controls.
-        if self.backend.try_em_replace(target_hwnd, old_length, text):
-            session.inserted_text = text
-            return True
-
-        # Strategy 2: keyboard simulation — needs target to be foreground.
+        # Always use keyboard simulation so the user sees the visual selection animation
+        # (Shift+Left × n highlights the ASR text, then Ctrl+V replaces it).
+        # EM_SETSEL/EM_REPLACESEL is deliberately skipped as the primary path because it
+        # replaces silently with no visual feedback. It is kept only as a last-resort
+        # fallback after keyboard simulation fails.
         if not self.backend.force_foreground_window(target_hwnd):
-            _dbg("  force_foreground_window failed; using clipboard fallback")
+            _dbg("  force_foreground_window failed; trying EM fallback then clipboard")
+            if self.backend.try_em_replace(target_hwnd, old_length, text):
+                session.inserted_text = text
+                return True
             self._copy_fallback(text)
             return False
         time.sleep(0.10)
@@ -364,10 +368,10 @@ class TextInjector:
             safe_x = (rect.left + rect.right) // 2
             safe_y = rect.bottom - 160  # upper portion of text input, well above toolbar
             self.backend.post_click_to_restore_focus(target_hwnd, safe_x, safe_y)
-            time.sleep(0.12)
+            time.sleep(0.15)
             # Move caret to end so Shift+Left selects exactly the placeholder.
             _key_down(VK_CONTROL); _tap(VK_END); _key_up(VK_CONTROL)
-            time.sleep(0.05)
+            time.sleep(0.08)
 
         self.backend.kbd_replace(old_length, text)
         session.inserted_text = text

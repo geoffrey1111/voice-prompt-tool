@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRectF, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRectF, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
@@ -517,8 +517,6 @@ class RightAltKeyboardHook(QObject):
     ) -> None:
         super().__init__(parent)
         self._hook_handle = None
-        self._ctrl_down = False
-        self._shift_down = False
         self._ai_down = False
         self._dictation_combo_down = False
         self._right_alt_down = False
@@ -574,18 +572,22 @@ class RightAltKeyboardHook(QObject):
         return ctypes.windll.user32.CallNextHookEx(self._hook_handle, n_code, w_param, l_param)
 
     def _handle_key_event(self, vk_code: int, flags: int, message: int) -> bool:
+        # Always query actual modifier state from the OS rather than relying on tracked
+        # state. Tracking can fall out of sync when the hook is briefly uninstalled (e.g.
+        # while the settings dialog is open) and the user holds a modifier during that
+        # window — causing the next press to silently fail until Ctrl is released and
+        # re-pressed. GetAsyncKeyState is always accurate at hook-callback time.
         actual_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        actual_shift = bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
 
         if vk_code in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
-            self._ctrl_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
-            return False
+            return False  # modifier-only events never trigger hotkeys
 
         if vk_code in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
-            self._shift_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
             return False
 
-        if self._ctrl_down and not actual_ctrl:
-            self._ctrl_down = False
+        # Reset tracking flags if Ctrl is actually released (handles any sync gaps).
+        if not actual_ctrl:
             self._ai_down = False
             self._dictation_combo_down = False
 
@@ -594,7 +596,7 @@ class RightAltKeyboardHook(QObject):
 
         # AI hotkey
         if vk_code == self._ai_vk:
-            if is_down and self._mods_match(self._ai_mods) and not self._ai_down:
+            if is_down and self._mods_match_actual(self._ai_mods, actual_ctrl, actual_shift) and not self._ai_down:
                 self._ai_down = True
                 self.ctrl_space.emit()
                 return True
@@ -606,7 +608,7 @@ class RightAltKeyboardHook(QObject):
         if (not self._dictation_is_right_alt
                 and self._dictation_vk is not None
                 and vk_code == self._dictation_vk):
-            if is_down and self._mods_match(self._dictation_mods) and not self._dictation_combo_down:
+            if is_down and self._mods_match_actual(self._dictation_mods, actual_ctrl, actual_shift) and not self._dictation_combo_down:
                 self._dictation_combo_down = True
                 self.activated.emit()
                 return True
@@ -629,8 +631,10 @@ class RightAltKeyboardHook(QObject):
 
         return False
 
-    def _mods_match(self, required: frozenset[str]) -> bool:
-        return self._ctrl_down == ("ctrl" in required) and self._shift_down == ("shift" in required)
+    @staticmethod
+    def _mods_match_actual(required: frozenset[str], ctrl: bool, shift: bool) -> bool:
+        """Check modifier state against required set using live OS-queried values."""
+        return (ctrl == ("ctrl" in required)) and (shift == ("shift" in required))
 
     @staticmethod
     def _is_right_alt(vk_code: int, flags: int) -> bool:
@@ -1005,6 +1009,7 @@ class ResultWindow(QMainWindow):
         self._replacement_generation = 0
         self._pill_state = self._STATE_HIDDEN
         self._anim_frame = 0
+        self._target_hwnd: int | None = None  # for multi-monitor pill positioning
         # Coordinating insert + replace for AI mode
         self._insert_in_progress = False
         self._pending_final_text: str | None = None
@@ -1071,7 +1076,17 @@ class ResultWindow(QMainWindow):
         self._position_pill()
 
     def _position_pill(self) -> None:
-        screen = QApplication.primaryScreen()
+        # Use the screen containing the target window so the pill appears on the same
+        # monitor as the input field (important for dual-monitor setups).
+        screen = None
+        if self._target_hwnd:
+            rect = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.GetWindowRect(self._target_hwnd, ctypes.byref(rect)):
+                cx = (rect.left + rect.right) // 2
+                cy = (rect.top + rect.bottom) // 2
+                screen = QApplication.screenAt(QPoint(cx, cy))
+        if screen is None:
+            screen = QApplication.primaryScreen()
         if screen is None:
             return
         available = screen.availableGeometry()
@@ -1118,6 +1133,7 @@ class ResultWindow(QMainWindow):
             return
         self.recording_mode = "dictation" if mode == "dictation" else "ai"
         self._input_session = self.text_injector.capture_target(excluded_hwnd=int(self.winId()))
+        self._target_hwnd = self._input_session.target_hwnd  # for multi-monitor pill position
         self._replacement_generation += 1
         self._insert_in_progress = False
         self._pending_final_text = None
