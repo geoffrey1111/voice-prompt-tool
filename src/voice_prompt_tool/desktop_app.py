@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from voice_prompt_tool.desktop_audio_duck import AudioDucker
 from voice_prompt_tool.desktop_recorder import PauseableAudioRecorder, RecorderState
 from voice_prompt_tool.desktop_settings import (
     DesktopSettings,
@@ -1010,6 +1011,7 @@ class ResultWindow(QMainWindow):
         self._pill_state = self._STATE_HIDDEN
         self._anim_frame = 0
         self._target_hwnd: int | None = None  # for multi-monitor pill positioning
+        self._audio_ducker = AudioDucker()
         # Coordinating insert + replace for AI mode
         self._insert_in_progress = False
         self._pending_final_text: str | None = None
@@ -1139,6 +1141,7 @@ class ResultWindow(QMainWindow):
         self._pending_final_text = None
         self._pending_final_gen = None
         self.recorder.start()
+        self._audio_ducker.duck()
         self.last_activity_at = time.monotonic()
         self._pill_state = self._STATE_RECORDING
         self._anim_frame = 0
@@ -1166,6 +1169,7 @@ class ResultWindow(QMainWindow):
         if self.recorder.state not in (RecorderState.RECORDING, RecorderState.PAUSED):
             return
         audio_path = self.recorder.stop()
+        self._audio_ducker.restore()
         self.last_activity_at = time.monotonic()
         self._pill_state = self._STATE_ASR
         self._anim_frame = 0
@@ -1320,6 +1324,7 @@ class ResultWindow(QMainWindow):
                 self.recorder.stop()
             except Exception:
                 pass
+        self._audio_ducker.restore()
         self.model_warmup.shutdown()
 
     # ------------------------------------------------------------------ properties
