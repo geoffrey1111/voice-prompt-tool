@@ -111,28 +111,19 @@ class VocabularyManager:
         )
 
     def set_custom_entries_from_lines(self, lines: list[str]) -> None:
-        """Parse "错误词=正确词" lines (one per line) into custom entries, replacing existing ones."""
-        entries: dict[str, VocabEntry] = {}
+        """One correct term per line. Users only ever type the correct spelling — the
+        fuzzy pinyin pass in apply() catches near-homophone ASR mistakes on its own, so
+        there's no need to make users enumerate every wrong variant they might say."""
+        seen: dict[str, VocabEntry] = {}
         for line in lines:
-            line = line.strip()
-            if not line or "=" not in line:
+            term = line.strip()
+            if not term or term in seen:
                 continue
-            alias, term = line.split("=", 1)
-            alias, term = alias.strip(), term.strip()
-            if not alias or not term:
-                continue
-            if term not in entries:
-                entries[term] = VocabEntry(term=term, aliases=[])
-            if alias not in entries[term].aliases:
-                entries[term].aliases.append(alias)
-        self.entries = list(entries.values())
+            seen[term] = VocabEntry(term=term, aliases=[])
+        self.entries = list(seen.values())
 
     def custom_entries_as_lines(self) -> list[str]:
-        lines: list[str] = []
-        for entry in self.entries:
-            for alias in entry.aliases:
-                lines.append(f"{alias}={entry.term}")
-        return lines
+        return [entry.term for entry in self.entries]
 
     def _active_entries(self) -> list[VocabEntry]:
         preset = PRESET_VOCAB.get(self.industry, [])

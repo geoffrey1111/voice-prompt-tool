@@ -16,6 +16,7 @@ recordings/
 settings.json
 vocab.json
 usage_log.jsonl
+stage_durations.json
 
 # Python
 __pycache__/

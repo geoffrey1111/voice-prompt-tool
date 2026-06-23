@@ -373,7 +373,25 @@ class TextInjector:
             _key_down(VK_CONTROL); _tap(VK_END); _key_up(VK_CONTROL)
             time.sleep(0.08)
 
+        # Sample length before the keyboard replace so we can verify it actually landed —
+        # previously this path always returned True unconditionally, so a failed/garbled
+        # replace (e.g. focus lost mid-selection) would go undetected and the caller would
+        # hide the pill thinking the swap succeeded.
+        pre_length = self._sample_edit_lengths(target_hwnd)
         self.backend.kbd_replace(old_length, text)
+        time.sleep(0.12)
+
+        if pre_length >= 0:
+            post_length = self._sample_edit_lengths(target_hwnd)
+            expected = pre_length - old_length + len(text)
+            _dbg(f"replace_inserted_text: pre={pre_length}, post={post_length}, expected≈{expected}")
+            if abs(post_length - expected) > max(3, len(text) // 3):
+                _dbg("replace_inserted_text: verification FAILED — caller will retry")
+                return False  # caller (desktop_app) retries; pill stays visible
+        # For Qt-only apps with no accessible Edit children (e.g. WeChat), there's no
+        # reliable way to read back the control's text — trust the timing-based sequence
+        # but the caller still holds the pill for a fixed settle window afterward.
+
         session.inserted_text = text
         return True
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPoint, QRectF, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon, QPainter, QPainterPath
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QIcon, QLinearGradient, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -27,11 +27,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from voice_prompt_tool.desktop_audio_duck import AudioDucker
+from voice_prompt_tool.desktop_progress import StageTimeEstimator
 from voice_prompt_tool.desktop_recorder import PauseableAudioRecorder, RecorderState
 from voice_prompt_tool.desktop_usage_log import log_usage
 from voice_prompt_tool.desktop_vocab import PRESET_LABELS, VocabularyManager
@@ -54,6 +56,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "pill_transcribing":        "识别中",
         "pill_processing":          "处理中",
         "pill_model_loading":       "模型加载中",
+        "pill_replace_failed":      "替换失败，文字已复制到剪贴板，请手动粘贴",
+        "pill_generic_error":       "出错了，请重试",
+        "pill_asr_timeout":         "识别超时，请重试",
+        "pill_rewrite_timeout":     "处理超时，已复制到剪贴板",
         "menu_record_ai":           "开始录音并整理",
         "menu_dictation":           "快速听写",
         "menu_rewrite_panel":       "整理文字...",
@@ -68,6 +74,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "notif_ready_body":         "现在可以使用快捷键开始录音或听写。",
         "notif_released_title":     "模型已释放",
         "notif_released_body":      "如需继续使用，请先预热模型；热键会先进入加载状态。",
+        "notif_hotkey_failed_title": "快捷键启用失败",
+        "notif_hotkey_failed_body":  "可能被安全软件或系统策略拦截，快捷键暂时不可用：{error}。可尝试以管理员身份运行，或在设置里重新保存快捷键。",
         "tooltip_loading":          "Voice Prompt Tool - 模型加载中",
         "tooltip_ready":            "Voice Prompt Tool - 模型已就绪",
         "tooltip_released":         "Voice Prompt Tool - 模型已释放",
@@ -93,9 +101,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_hotkey_dictation_label": "听写模式快捷键",
         "settings_hotkey_panel_label":     "整理文字面板快捷键",
         "settings_hotkey_conflict":        "「{a}」和「{b}」设置成了相同的快捷键，请重新选择其中一个。",
+        "settings_hotkey_hint":     "点击按钮后直接按下想要的组合键即可录制，按 Esc 取消。支持任意 Ctrl/Shift/Alt 组合，或单独的 F1–F12。",
+        "settings_tab_general":     "通用",
+        "settings_tab_hotkeys":     "快捷键",
+        "settings_tab_vocab":       "行业词库",
         "settings_industry_label":  "行业词库",
-        "settings_vocab_label":     "自定义词库（每行一条，格式：错误词=正确词）",
-        "settings_vocab_placeholder": "例如：\n你和度=拟合度\n机型=畸形",
+        "settings_vocab_label":     "自定义词库（每行填一个正确的专业词，识别时会优先匹配）",
+        "settings_vocab_placeholder": "例如：\n拟合度\n立绘\n畸形",
         "settings_btn_refresh":     "刷新状态",
         "settings_btn_load":        "预热模型",
         "settings_btn_release":     "释放模型",
@@ -120,6 +132,10 @@ _STRINGS: dict[str, dict[str, str]] = {
         "pill_transcribing":        "Transcribing",
         "pill_processing":          "Processing",
         "pill_model_loading":       "Loading models",
+        "pill_replace_failed":      "Replace failed — copied to clipboard, please paste manually",
+        "pill_generic_error":       "Something went wrong, please try again",
+        "pill_asr_timeout":         "Transcription timed out, please try again",
+        "pill_rewrite_timeout":     "Processing timed out — copied to clipboard",
         "menu_record_ai":           "Record && Rewrite",
         "menu_dictation":           "Quick Dictation",
         "menu_rewrite_panel":       "Rewrite Text...",
@@ -134,6 +150,8 @@ _STRINGS: dict[str, dict[str, str]] = {
         "notif_ready_body":         "Ready. Use your configured hotkeys to record or dictate.",
         "notif_released_title":     "Models Released",
         "notif_released_body":      "Reload models from the tray menu to continue.",
+        "notif_hotkey_failed_title": "Hotkeys Failed to Enable",
+        "notif_hotkey_failed_body":  "Hotkeys are temporarily unavailable, possibly blocked by security software or system policy: {error}. Try running as administrator, or re-save the hotkeys in Settings.",
         "tooltip_loading":          "Voice Prompt Tool - Loading",
         "tooltip_ready":            "Voice Prompt Tool - Ready",
         "tooltip_released":         "Voice Prompt Tool - Released",
@@ -159,9 +177,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_hotkey_dictation_label": "Dictation Hotkey",
         "settings_hotkey_panel_label":     "Rewrite Panel Hotkey",
         "settings_hotkey_conflict":        "\"{a}\" and \"{b}\" are set to the same hotkey. Please change one of them.",
+        "settings_hotkey_hint":     "Click a button, then press the key combo you want — Esc cancels. Any Ctrl/Shift/Alt combo works, or a standalone F1-F12.",
+        "settings_tab_general":     "General",
+        "settings_tab_hotkeys":     "Hotkeys",
+        "settings_tab_vocab":       "Vocabulary",
         "settings_industry_label":  "Industry vocabulary",
-        "settings_vocab_label":     "Custom terms (one per line, format: wrong=correct)",
-        "settings_vocab_placeholder": "e.g.\nfoo bar=FooBar",
+        "settings_vocab_label":     "Custom terms (one correct term per line — gets priority matching)",
+        "settings_vocab_placeholder": "e.g.\nFooBar\nKubernetes",
         "settings_btn_refresh":     "Refresh",
         "settings_btn_load":        "Load Models",
         "settings_btn_release":     "Release",
@@ -266,6 +288,65 @@ def check_hotkey_conflicts(hotkeys: dict[str, str]) -> list[tuple[str, str]]:
                 conflicts.append((label_a, label_b))
     return conflicts
 
+
+# Common Windows/app shortcuts that are risky to reuse as a global hotkey. There is no
+# public API to enumerate every hotkey every running app has registered (most use a
+# low-level keyboard hook exactly like ours, which Windows doesn't expose a registry of),
+# so this curated list plus a live RegisterHotKey probe (below) is the best achievable
+# approximation — not exhaustive, but catches the combos most likely to bite someone.
+_KNOWN_SYSTEM_HOTKEYS = frozenset({
+    "win+l", "win+d", "win+e", "win+r", "win+s", "win+i", "win+a", "win+tab",
+    "win+shift+s", "win+printscreen", "win+pause", "win+x",
+    "ctrl+shift+esc", "alt+tab", "alt+f4", "alt+space", "alt+escape",
+    "ctrl+c", "ctrl+v", "ctrl+x", "ctrl+z", "ctrl+y", "ctrl+a", "ctrl+s",
+    "ctrl+n", "ctrl+o", "ctrl+p", "ctrl+w", "ctrl+t", "ctrl+f", "ctrl+q",
+    "ctrl+shift+t", "ctrl+shift+n", "ctrl+shift+p", "ctrl+shift+i", "ctrl+shift+c",
+    "ctrl+shift+j", "ctrl+shift+esc", "ctrl+alt+t",
+    "f5", "f11", "f12", "printscreen",
+})
+
+_MOD_ALT = 0x0001
+_MOD_CONTROL = 0x0002
+_MOD_SHIFT = 0x0004
+_HOTKEY_PROBE_ID = 0xBEEF
+
+
+def _probe_system_hotkey_taken(mods: frozenset[str], vk: int) -> bool:
+    """Best-effort live check: try to register the combo via the legacy RegisterHotKey
+    API. If another app already holds it through that API, registration fails — a real
+    signal of a conflict (though it can't see low-level-hook-based hotkeys, including our
+    own, since those don't go through the per-combo registry)."""
+    fs_modifiers = 0
+    if "alt" in mods:
+        fs_modifiers |= _MOD_ALT
+    if "ctrl" in mods:
+        fs_modifiers |= _MOD_CONTROL
+    if "shift" in mods:
+        fs_modifiers |= _MOD_SHIFT
+    try:
+        ok = bool(ctypes.windll.user32.RegisterHotKey(None, _HOTKEY_PROBE_ID, fs_modifiers, vk))
+        if ok:
+            ctypes.windll.user32.UnregisterHotKey(None, _HOTKEY_PROBE_ID)
+            return False
+        return True
+    except Exception:
+        return False  # probe itself failing shouldn't block the user
+
+
+def check_system_hotkey_conflict(hotkey: str) -> str | None:
+    """Returns a human-readable warning if `hotkey` looks likely to collide with a
+    system or other-app shortcut, else None. Not a hard block — caller should let the
+    user confirm and proceed, since this can't be made fully reliable (see above)."""
+    if hotkey == "right_alt":
+        return None
+    normalized = hotkey.lower()
+    if normalized in _KNOWN_SYSTEM_HOTKEYS:
+        return f"「{_format_hotkey(hotkey)}」是常见的系统/软件快捷键，使用它可能导致冲突或失效。"
+    parsed = _parse_hotkey(hotkey)
+    if parsed and _probe_system_hotkey_taken(*parsed):
+        return f"检测到「{_format_hotkey(hotkey)}」已被其他程序通过系统热键注册占用，使用它可能会失效。"
+    return None
+
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 # On 64-bit Windows, WPARAM/LPARAM/LRESULT are 64-bit; ctypes.wintypes uses c_long (32-bit)
 # which causes OverflowError in CallNextHookEx. Use pointer-sized types instead.
@@ -313,10 +394,25 @@ QLabel#pillLabel {
 """
 
 PILL_BG_COLOR = QColor("#101827")
+PILL_PROGRESS_START = QColor("#1d4ed8")   # blue
+PILL_PROGRESS_END = QColor("#22d3ee")     # cyan
 
 
 class PillContainer(QWidget):
-    """Paints a rounded-capsule background; CSS border-radius is not reliable on Windows."""
+    """Paints a rounded-capsule background; CSS border-radius is not reliable on Windows.
+
+    Also renders an optional left-to-right progress fill (gradient) so the user can see
+    the tool is actively working instead of staring at an unchanging pill during ASR/AI
+    processing, which can otherwise look frozen.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._progress: float | None = None  # None = no progress fill; 0..1 = fraction filled
+
+    def set_progress(self, value: float | None) -> None:
+        self._progress = None if value is None else max(0.0, min(1.0, value))
+        self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
@@ -324,7 +420,14 @@ class PillContainer(QWidget):
         path = QPainterPath()
         r = self.height() / 2.0
         path.addRoundedRect(QRectF(self.rect()), r, r)
+        painter.setClipPath(path)
         painter.fillPath(path, PILL_BG_COLOR)
+        if self._progress is not None and self._progress > 0:
+            fill_width = self.width() * self._progress
+            gradient = QLinearGradient(0, 0, self.width(), 0)
+            gradient.setColorAt(0.0, PILL_PROGRESS_START)
+            gradient.setColorAt(1.0, PILL_PROGRESS_END)
+            painter.fillRect(QRectF(0, 0, fill_width, self.height()), gradient)
 
 
 # Settings dialog uses its own style
@@ -365,6 +468,9 @@ def tool_memory_summary(root: Path) -> str:
         "if ($rows.Count -eq 0) { '无本工具进程' } "
         "else { ($rows | ForEach-Object { \"$($_.Name): $($_.MB) MB\" }) -join '; ' }"
     )
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
     try:
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script, root_text],
@@ -372,6 +478,8 @@ def tool_memory_summary(root: Path) -> str:
             capture_output=True,
             text=True,
             timeout=5,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except Exception:
         return "资源占用：暂不可用"
@@ -407,7 +515,16 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        form = QFormLayout()
+        tabs = QTabWidget()
+        tabs.addTab(self._build_general_tab(lang), _t("settings_tab_general", lang))
+        tabs.addTab(self._build_hotkeys_tab(lang), _t("settings_tab_hotkeys", lang))
+        tabs.addTab(self._build_vocab_tab(lang), _t("settings_tab_vocab", lang))
+        layout.addWidget(tabs)
+        self._build_footer(layout, lang)
+
+    def _build_general_tab(self, lang: str) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.startup_checkbox = QCheckBox(_t("settings_startup_check", lang))
@@ -450,6 +567,12 @@ class SettingsDialog(QDialog):
         self.language_combo.setCurrentIndex(max(0, self.language_combo.findData(self.settings.asr_language)))
         self.language_combo.setToolTip(_t("settings_lang_tip", lang))
         form.addRow(_t("settings_lang_label", lang), self.language_combo)
+        return tab
+
+    def _build_hotkeys_tab(self, lang: str) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.hotkey_ai_btn = HotkeyButton(self.settings.hotkey_ai, lang=lang)
         form.addRow(_t("settings_hotkey_ai_label", lang), self.hotkey_ai_btn)
@@ -460,22 +583,34 @@ class SettingsDialog(QDialog):
         self.hotkey_panel_btn = HotkeyButton(self.settings.hotkey_rewrite_panel, lang=lang)
         form.addRow(_t("settings_hotkey_panel_label", lang), self.hotkey_panel_btn)
 
+        hint = QLabel(_t("settings_hotkey_hint", lang))
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+        return tab
+
+    def _build_vocab_tab(self, lang: str) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.industry_combo = QComboBox()
         for key, label in PRESET_LABELS.items():
             self.industry_combo.addItem(label, key)
         self.industry_combo.setCurrentIndex(max(0, self.industry_combo.findData(self.vocab.industry)))
         form.addRow(_t("settings_industry_label", lang), self.industry_combo)
-
         layout.addLayout(form)
 
         vocab_label = QLabel(_t("settings_vocab_label", lang))
+        vocab_label.setWordWrap(True)
         layout.addWidget(vocab_label)
         self.vocab_edit = QPlainTextEdit()
         self.vocab_edit.setPlaceholderText(_t("settings_vocab_placeholder", lang))
         self.vocab_edit.setPlainText("\n".join(self.vocab.custom_entries_as_lines()))
-        self.vocab_edit.setMaximumHeight(90)
         layout.addWidget(self.vocab_edit)
+        return tab
 
+    def _build_footer(self, layout: QVBoxLayout, lang: str) -> None:
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -542,6 +677,19 @@ class SettingsDialog(QDialog):
             message = _t("settings_hotkey_conflict", lang).format(a=label_a, b=label_b)
             QMessageBox.warning(self, _t("settings_title", lang), message)
             return
+        for hotkey in (new_ai_hotkey, new_dictation_hotkey, new_panel_hotkey):
+            warning = check_system_hotkey_conflict(hotkey)
+            if warning is None:
+                continue
+            choice = QMessageBox.question(
+                self,
+                _t("settings_title", lang),
+                f"{warning}\n\n仍要保存这个快捷键吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
         self.settings.start_with_windows = self.startup_checkbox.isChecked()
         self.settings.auto_prewarm = True
         self.settings.idle_release_minutes = int(self.idle_release_combo.currentData())
@@ -1123,6 +1271,9 @@ class ResultWindow(QMainWindow):
         self._last_audio_seconds = 0.0
         self._last_raw_chars = 0
         self._last_final_chars = 0
+        self._progress_estimator = StageTimeEstimator(self.root)
+        self._stage_started_at = 0.0
+        self._processing_generation = 0
         # Coordinating insert + replace for AI mode
         self._insert_in_progress = False
         self._pending_final_text: str | None = None
@@ -1161,6 +1312,7 @@ class ResultWindow(QMainWindow):
         self.pill_label.setObjectName("pillLabel")
         self.pill_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.pill_label)
+        self.pill_container = container
         self.setCentralWidget(container)
 
     # ------------------------------------------------------------------ pill show/hide
@@ -1177,6 +1329,7 @@ class ResultWindow(QMainWindow):
         self._anim_timer.stop()
         self._topmost_timer.stop()
         self._pill_state = self._STATE_HIDDEN
+        self.pill_container.set_progress(None)
         self.hide()
 
     def _sync_pill_geometry(self) -> None:
@@ -1225,14 +1378,24 @@ class ResultWindow(QMainWindow):
         lang = self._settings_provider().asr_language
         if self._pill_state == self._STATE_MODEL_LOADING:
             self.pill_label.setText(f"{_t('pill_model_loading', lang)}{ellipsis}")
+            self.pill_container.set_progress(None)
         elif self._pill_state == self._STATE_RECORDING:
             key = "pill_ai_recording" if self.recording_mode == "ai" else "pill_dictation_recording"
             self.pill_label.setText(f"{_t(key, lang)}{dots}")
+            self.pill_container.set_progress(None)
         elif self._pill_state == self._STATE_ASR:
-            self.pill_label.setText(f"{_t('pill_transcribing', lang)}{ellipsis}")
+            percent = self._stage_progress_percent("asr")
+            self.pill_label.setText(f"{_t('pill_transcribing', lang)} {percent}%")
         elif self._pill_state == self._STATE_PROCESSING:
-            self.pill_label.setText(f"{_t('pill_processing', lang)}{ellipsis}")
+            percent = self._stage_progress_percent("rewrite")
+            self.pill_label.setText(f"{_t('pill_processing', lang)} {percent}%")
         self._sync_pill_geometry()
+
+    def _stage_progress_percent(self, stage: str) -> int:
+        elapsed = time.monotonic() - self._stage_started_at
+        fraction = self._progress_estimator.progress_fraction(stage, elapsed)
+        self.pill_container.set_progress(fraction)
+        return int(fraction * 100)
 
     # ------------------------------------------------------------------ recording flow
 
@@ -1286,7 +1449,10 @@ class ResultWindow(QMainWindow):
         self.last_activity_at = time.monotonic()
         self._pill_state = self._STATE_ASR
         self._anim_frame = 0
-        self.pill_label.setText("识别中.")
+        self._stage_started_at = time.monotonic()
+        self.pill_label.setText("识别中 0%")
+        gen = self._replacement_generation
+        self._processing_generation = gen
         self._processing_thread = ProcessingThread(
             audio_path, self.root, self.model_warmup, mode=self.recording_mode
         )
@@ -1295,6 +1461,12 @@ class ResultWindow(QMainWindow):
         self._processing_thread.failed.connect(self._show_error)
         self._processing_thread.finished.connect(self._processing_thread.deleteLater)
         self._processing_thread.start()
+        # Watchdog: ASR almost never legitimately takes longer than ~3x the recording's
+        # own length plus a floor. If it does, something is stuck (Ollama unresponsive,
+        # model crashed, etc.) — surface that instead of leaving the pill spinning forever
+        # with the user unable to tell whether anything is happening at all.
+        asr_timeout_ms = int(max(20.0, self._last_audio_seconds * 3) * 1000)
+        QTimer.singleShot(asr_timeout_ms, lambda: self._check_stage_timeout(gen, self._STATE_ASR))
 
     # ------------------------------------------------------------------ processing callbacks
 
@@ -1302,10 +1474,16 @@ class ResultWindow(QMainWindow):
         """Called when ASR finishes; Qwen is still running. AI mode only."""
         if self.recording_mode != "ai" or self._input_session is None:
             return
+        if self._replacement_generation != self._processing_generation:
+            return  # a newer recording started; this is a stale/late signal — ignore it
         asr_text = result.corrected_text or result.raw_text
+        self._progress_estimator.record("asr", time.monotonic() - self._stage_started_at)
         self._pill_state = self._STATE_PROCESSING
         self._anim_frame = 0
-        self.pill_label.setText("处理中.")
+        self._stage_started_at = time.monotonic()
+        self.pill_label.setText("处理中 0%")
+        gen = self._processing_generation
+        QTimer.singleShot(60000, lambda: self._check_stage_timeout(gen, self._STATE_PROCESSING))
         # Insert ASR text into target and track when insert is done
         self._insert_in_progress = True
         self._do_insert_with_retry(asr_text, retries=0)
@@ -1326,12 +1504,16 @@ class ResultWindow(QMainWindow):
     def _show_result(self, result: VoicePromptResult) -> None:
         self._processing_thread = None
         self.last_activity_at = time.monotonic()
+        if self._replacement_generation != self._processing_generation:
+            return  # stale/late signal from an interaction that already timed out — ignore
 
         if self.recording_mode == "dictation":
+            self._progress_estimator.record("asr", time.monotonic() - self._stage_started_at)
             self._finish_dictation(result)
             return
 
         # AI mode: replace the ASR text with the Qwen result
+        self._progress_estimator.record("rewrite", time.monotonic() - self._stage_started_at)
         gen = self._replacement_generation
         final_text = result.optimized_prompt or result.corrected_text or result.raw_text
         self._pending_final_text = final_text
@@ -1364,8 +1546,11 @@ class ResultWindow(QMainWindow):
         if retries < 3:
             QTimer.singleShot(300, lambda: self._do_replace_with_retry(text, gen, retries + 1))
         else:
-            # All replace attempts failed; hide pill anyway (text is in clipboard as fallback)
-            self._finish_replacement(gen)
+            # All replace attempts failed. Tell the user instead of silently hiding the
+            # pill — the text is sitting in the clipboard as a fallback, but they need to
+            # know to paste it themselves rather than assuming it landed.
+            self._log_usage("ai", self._last_raw_chars, self._last_final_chars, success=False)
+            self._show_transient_message(_t("pill_replace_failed", self._settings_provider().asr_language))
 
     def _finish_replacement(self, gen: int) -> None:
         if gen != self._replacement_generation:
@@ -1373,6 +1558,15 @@ class ResultWindow(QMainWindow):
         self.last_activity_at = time.monotonic()
         self._log_usage("ai", self._last_raw_chars, self._last_final_chars, success=True)
         self._hide_pill()
+
+    def _show_transient_message(self, text: str, hold_ms: int = 2500) -> None:
+        """Show a short-lived message in the pill, then hide — for failure feedback that
+        must reach the user instead of vanishing silently with the pill."""
+        self.pill_container.set_progress(None)
+        self.pill_label.setText(text)
+        self._sync_pill_geometry()
+        self._anim_timer.stop()
+        QTimer.singleShot(hold_ms, self._hide_pill)
 
     # ------------------------------------------------------------------ dictation flow
 
@@ -1414,7 +1608,29 @@ class ResultWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self._processing_thread = None
         self.last_activity_at = time.monotonic()
-        self._hide_pill()
+        if self._replacement_generation != self._processing_generation:
+            return  # stale/late signal — a newer recording is already in flight
+        self._log_usage(self.recording_mode, self._last_raw_chars, self._last_final_chars, success=False)
+        # Surface what went wrong instead of the pill just vanishing with no explanation —
+        # silently failing here is exactly the "said something, nothing happened, no idea
+        # why" experience that's worse than a visible (if blunt) error.
+        self._show_transient_message(message[:40] if message else _t("pill_generic_error", self._settings_provider().asr_language))
+
+    def _check_stage_timeout(self, gen: int, expected_state: str) -> None:
+        """Watchdog: if we're still in the same stage long after it should have finished,
+        treat it as stuck rather than leaving the user staring at a pill that looks frozen
+        with zero indication of whether anything is happening."""
+        if gen != self._replacement_generation or self._pill_state != expected_state:
+            return  # already moved on normally
+        self._processing_thread = None
+        # Bump the generation so a late signal from the still-running background thread
+        # (we can't forcibly kill it) is recognized as stale by every gen-checked handler
+        # and ignored, instead of clobbering whatever the user does next.
+        self._replacement_generation += 1
+        lang = self._settings_provider().asr_language
+        key = "pill_asr_timeout" if expected_state == self._STATE_ASR else "pill_rewrite_timeout"
+        self._log_usage(self.recording_mode, self._last_raw_chars, self._last_final_chars, success=False)
+        self._show_transient_message(_t(key, lang), hold_ms=3000)
 
     # ------------------------------------------------------------------ model status
 
@@ -1517,7 +1733,7 @@ class DesktopController:
             self.hotkey.activated.connect(lambda: self.handle_recording_hotkey(mode="ai"))
             self.hotkey.dictation_activated.connect(lambda: self.handle_recording_hotkey(mode="dictation"))
             self.hotkey.panel_activated.connect(self.open_rewrite_panel)
-            self.hotkey.register()
+            self._register_hotkey_with_feedback()
         self.tray.show()
         self.start_model_warmup(show_window=show_on_start)
         self.idle_timer = QTimer()
@@ -1531,6 +1747,22 @@ class DesktopController:
 
     def open_rewrite_panel(self) -> None:
         self.rewrite_panel.show_and_raise()
+
+    def _register_hotkey_with_feedback(self) -> None:
+        """Install the global hotkey hook, surfacing failure instead of crashing or
+        silently leaving hotkeys dead with no indication why (e.g. blocked by AV/policy)."""
+        if self.hotkey is None:
+            return
+        try:
+            self.hotkey.register()
+        except Exception as exc:
+            lang = self._lang()
+            self.tray.showMessage(
+                _t("notif_hotkey_failed_title", lang),
+                _t("notif_hotkey_failed_body", lang).format(error=exc),
+                QSystemTrayIcon.MessageIcon.Warning,
+                6000,
+            )
 
     def _lang(self) -> str:
         return self.settings.asr_language
@@ -1583,9 +1815,15 @@ class DesktopController:
         finally:
             if self.hotkey is not None:
                 self.hotkey.set_hotkeys(self.settings.hotkey_ai, self.settings.hotkey_dictation, self.settings.hotkey_rewrite_panel)
-                self.hotkey.register()
+                self._register_hotkey_with_feedback()
         if not accepted:
             return
+        # Reset the idle clock so a freshly-shortened idle-release interval doesn't
+        # immediately see "stale" idle time accumulated under the OLD (often longer or
+        # "never") interval and release the model right after the setting was saved —
+        # that looked like "every settings change forces a reload" even though the model
+        # itself was never touched.
+        self.window.last_activity_at = time.monotonic()
         lang_changed = self.settings.asr_language != previous_asr_language
         if self.settings.rewrite_style != previous_rewrite_style or lang_changed:
             self.window.model_warmup.release()
