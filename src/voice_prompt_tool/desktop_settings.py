@@ -21,6 +21,7 @@ class DesktopSettings:
     asr_language: str = "zh"
     hotkey_ai: str = "ctrl+space"
     hotkey_dictation: str = "right_alt"
+    hotkey_rewrite_panel: str = "ctrl+alt+r"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DesktopSettings":
@@ -32,6 +33,7 @@ class DesktopSettings:
         settings.asr_language = _valid_asr_language(data.get("asr_language"))
         settings.hotkey_ai = _valid_hotkey(data.get("hotkey_ai"), "ctrl+space")
         settings.hotkey_dictation = _valid_hotkey(data.get("hotkey_dictation"), "right_alt")
+        settings.hotkey_rewrite_panel = _valid_hotkey(data.get("hotkey_rewrite_panel"), "ctrl+alt+r")
         return settings
 
 

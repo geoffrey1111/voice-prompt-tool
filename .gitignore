@@ -12,6 +12,11 @@ logs/
 recordings/
 *.wav
 
+# 用户本地设置与数据（不入库）
+settings.json
+vocab.json
+usage_log.jsonl
+
 # Python
 __pycache__/
 *.pyc

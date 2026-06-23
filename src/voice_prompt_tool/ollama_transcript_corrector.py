@@ -12,11 +12,16 @@ class OllamaTranscriptCorrector:
         self,
         model: str,
         endpoint: str = "http://127.0.0.1:11434",
+        keep_alive: int | str = "10m",
         post_json: Callable[[str, dict], str] = _post_json,
     ) -> None:
         self.model = model
         self.endpoint = endpoint.rstrip("/")
+        self.keep_alive = keep_alive
         self._post_json = post_json
+
+    def set_keep_alive(self, keep_alive: int | str) -> None:
+        self.keep_alive = keep_alive
 
     def correct(self, text: str) -> str:
         prompt = (
@@ -33,7 +38,7 @@ class OllamaTranscriptCorrector:
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "keep_alive": 0,
+            "keep_alive": self.keep_alive,
         }
 
         try:

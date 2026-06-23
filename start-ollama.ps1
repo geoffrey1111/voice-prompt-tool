@@ -38,7 +38,7 @@ Ensure-Junction $ModelsDir $ModelsTarget
 
 $env:OLLAMA_MODELS = $ModelsDir
 $env:OLLAMA_HOST = "127.0.0.1:11434"
-$env:OLLAMA_KEEP_ALIVE = "0"
+$env:OLLAMA_KEEP_ALIVE = "30m"
 $env:OLLAMA_NUM_PARALLEL = "1"
 $env:OLLAMA_MAX_LOADED_MODELS = "1"
 

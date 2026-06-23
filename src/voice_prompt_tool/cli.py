@@ -60,14 +60,15 @@ def build_rewriter(model: str, use_ollama: bool, keep_alive: int | str = 0, rewr
             print(f"本地 Ollama/Qwen 语义重组暂不可用，使用规则整理。原因：{exc}")
             return polish_spoken_text(text)
 
+    rewrite_with_fallback.ollama_rewriter = ollama  # type: ignore[attr-defined]
     return rewrite_with_fallback
 
 
-def build_corrector(model: str, use_ollama: bool):
+def build_corrector(model: str, use_ollama: bool, keep_alive: int | str = "10m"):
     if not use_ollama:
         return correct_transcript
 
-    ollama = OllamaTranscriptCorrector(model=model)
+    ollama = OllamaTranscriptCorrector(model=model, keep_alive=keep_alive)
 
     def correct_with_fallback(text: str) -> str:
         try:
@@ -76,6 +77,7 @@ def build_corrector(model: str, use_ollama: bool):
             print(f"本地 Ollama/Qwen 转写校对暂不可用，使用规则校对。原因：{exc}")
             return correct_transcript(text)
 
+    correct_with_fallback.ollama_corrector = ollama  # type: ignore[attr-defined]
     return correct_with_fallback
 
 

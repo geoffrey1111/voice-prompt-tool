@@ -10,6 +10,7 @@ from voice_prompt_tool.cli import build_corrector, build_rewriter, build_transcr
 from voice_prompt_tool.desktop_ollama import OllamaServiceManager
 from voice_prompt_tool.desktop_processing import process_recording_in_stages
 from voice_prompt_tool.desktop_settings import DesktopSettings
+from voice_prompt_tool.desktop_vocab import VocabularyManager
 from voice_prompt_tool.paths import configure_cache_environment, ensure_runtime_dirs
 from voice_prompt_tool.pipeline import VoicePromptResult
 
@@ -50,10 +51,19 @@ def build_warmup_bundle(root: Path, settings: DesktopSettings | None = None) -> 
             asr_language="zh",
         )
     transcriber = build_transcriber(args, root)
+    base_corrector = build_corrector("qwen3:4b-instruct", use_ollama=False)
+
+    def correct_with_vocab(text: str) -> str:
+        # Reload from disk on every call (cheap — small JSON file) so vocab edits made in
+        # Settings take effect immediately without requiring a full model re-warmup.
+        vocab = VocabularyManager(root)
+        vocab.load()
+        return base_corrector(vocab.apply(text))
+
     return WarmupBundle(
         transcriber=transcriber,
         transcribe=transcriber.transcribe,
-        correct_transcript=build_corrector("qwen3:4b-instruct", use_ollama=False),
+        correct_transcript=correct_with_vocab,
         rewrite=build_rewriter(
             "qwen3:4b-instruct",
             use_ollama=True,
@@ -162,6 +172,20 @@ class DesktopModelWarmup:
     def rewrite_text(self, text: str) -> str:
         bundle = self._require_bundle()
         return bundle.rewrite(text)
+
+    def update_keep_alive(self, settings: DesktopSettings) -> None:
+        """Push a changed idle-release setting into the already-warmed rewriter/corrector
+        without requiring a full re-warmup. Without this, a live Ollama rewriter keeps using
+        whatever keep_alive value was baked in at warmup time, so changing the setting in the
+        UI silently has no effect until the app restarts."""
+        bundle = self._bundle
+        if bundle is None:
+            return
+        keep_alive = ollama_keep_alive_for_settings(settings)
+        for fn in (bundle.rewrite, bundle.correct_transcript):
+            target = getattr(fn, "ollama_rewriter", None) or getattr(fn, "ollama_corrector", None)
+            if target is not None:
+                target.set_keep_alive(keep_alive)
 
     def transcribe_only(self, audio_path: Path) -> VoicePromptResult:
         bundle = self._require_bundle()

@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
 
 from voice_prompt_tool.desktop_audio_duck import AudioDucker
 from voice_prompt_tool.desktop_recorder import PauseableAudioRecorder, RecorderState
+from voice_prompt_tool.desktop_usage_log import log_usage
+from voice_prompt_tool.desktop_vocab import PRESET_LABELS, VocabularyManager
 from voice_prompt_tool.desktop_settings import (
     DesktopSettings,
     StartupRegistration,
@@ -89,7 +91,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_lang_tip":        "切换语言后需重新加载模型。English 模式下载 Whisper medium 模型（约 1.5 GB）。",
         "settings_hotkey_ai_label":        "AI 模式快捷键",
         "settings_hotkey_dictation_label": "听写模式快捷键",
-        "settings_hotkey_conflict":        "AI 快捷键和听写快捷键不能相同，请重新选择。",
+        "settings_hotkey_panel_label":     "整理文字面板快捷键",
+        "settings_hotkey_conflict":        "「{a}」和「{b}」设置成了相同的快捷键，请重新选择其中一个。",
+        "settings_industry_label":  "行业词库",
+        "settings_vocab_label":     "自定义词库（每行一条，格式：错误词=正确词）",
+        "settings_vocab_placeholder": "例如：\n你和度=拟合度\n机型=畸形",
         "settings_btn_refresh":     "刷新状态",
         "settings_btn_load":        "预热模型",
         "settings_btn_release":     "释放模型",
@@ -151,7 +157,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "settings_lang_tip":        "Switching language reloads models. English mode downloads Whisper medium (~1.5 GB).",
         "settings_hotkey_ai_label":        "AI Mode Hotkey",
         "settings_hotkey_dictation_label": "Dictation Hotkey",
-        "settings_hotkey_conflict":        "AI hotkey and Dictation hotkey must be different. Please choose again.",
+        "settings_hotkey_panel_label":     "Rewrite Panel Hotkey",
+        "settings_hotkey_conflict":        "\"{a}\" and \"{b}\" are set to the same hotkey. Please change one of them.",
+        "settings_industry_label":  "Industry vocabulary",
+        "settings_vocab_label":     "Custom terms (one per line, format: wrong=correct)",
+        "settings_vocab_placeholder": "e.g.\nfoo bar=FooBar",
         "settings_btn_refresh":     "Refresh",
         "settings_btn_load":        "Load Models",
         "settings_btn_release":     "Release",
@@ -190,6 +200,7 @@ VK_LCONTROL = 0xA2
 VK_RCONTROL = 0xA3
 VK_SPACE = 0x20
 VK_MENU = 0x12
+VK_LMENU = 0xA4
 VK_RMENU = 0xA5
 VK_SHIFT = 0x10
 VK_LSHIFT = 0xA0
@@ -241,6 +252,19 @@ def _format_hotkey(s: str) -> str:
                 "enter": "Enter", "tab": "Tab", "backspace": "Backspace"}
     parts = [p.strip().lower() for p in s.split("+") if p.strip()]
     return " + ".join(_display.get(p, p.upper() if len(p) == 1 else p.title()) for p in parts)
+
+
+def check_hotkey_conflicts(hotkeys: dict[str, str]) -> list[tuple[str, str]]:
+    """Pairwise-compare a {label: hotkey_string} map; return (label_a, label_b) for duplicates."""
+    conflicts: list[tuple[str, str]] = []
+    items = list(hotkeys.items())
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            label_a, hotkey_a = items[i]
+            label_b, hotkey_b = items[j]
+            if hotkey_a == hotkey_b:
+                conflicts.append((label_a, label_b))
+    return conflicts
 
 ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 # On 64-bit Windows, WPARAM/LPARAM/LRESULT are 64-bit; ctypes.wintypes uses c_long (32-bit)
@@ -369,6 +393,8 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.model_warmup = model_warmup
         self.startup_registration = startup_registration
+        self.vocab = VocabularyManager(self.root)
+        self.vocab.load()
         self.setWindowTitle(_t("settings_title", settings.asr_language))
         self.setMinimumWidth(520)
         self.setStyleSheet(SETTINGS_STYLE)
@@ -428,10 +454,27 @@ class SettingsDialog(QDialog):
         self.hotkey_ai_btn = HotkeyButton(self.settings.hotkey_ai, lang=lang)
         form.addRow(_t("settings_hotkey_ai_label", lang), self.hotkey_ai_btn)
 
-        self.hotkey_dictation_btn = HotkeyButton(self.settings.hotkey_dictation, lang=lang)
+        self.hotkey_dictation_btn = HotkeyButton(self.settings.hotkey_dictation, lang=lang, allow_right_alt=True)
         form.addRow(_t("settings_hotkey_dictation_label", lang), self.hotkey_dictation_btn)
 
+        self.hotkey_panel_btn = HotkeyButton(self.settings.hotkey_rewrite_panel, lang=lang)
+        form.addRow(_t("settings_hotkey_panel_label", lang), self.hotkey_panel_btn)
+
+        self.industry_combo = QComboBox()
+        for key, label in PRESET_LABELS.items():
+            self.industry_combo.addItem(label, key)
+        self.industry_combo.setCurrentIndex(max(0, self.industry_combo.findData(self.vocab.industry)))
+        form.addRow(_t("settings_industry_label", lang), self.industry_combo)
+
         layout.addLayout(form)
+
+        vocab_label = QLabel(_t("settings_vocab_label", lang))
+        layout.addWidget(vocab_label)
+        self.vocab_edit = QPlainTextEdit()
+        self.vocab_edit.setPlaceholderText(_t("settings_vocab_placeholder", lang))
+        self.vocab_edit.setPlainText("\n".join(self.vocab.custom_entries_as_lines()))
+        self.vocab_edit.setMaximumHeight(90)
+        layout.addWidget(self.vocab_edit)
 
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
@@ -487,9 +530,17 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         new_ai_hotkey = self.hotkey_ai_btn.hotkey
         new_dictation_hotkey = self.hotkey_dictation_btn.hotkey
-        if new_ai_hotkey == new_dictation_hotkey:
-            lang = self.settings.asr_language
-            QMessageBox.warning(self, _t("settings_title", lang), _t("settings_hotkey_conflict", lang))
+        new_panel_hotkey = self.hotkey_panel_btn.hotkey
+        lang = self.settings.asr_language
+        conflicts = check_hotkey_conflicts({
+            _t("settings_hotkey_ai_label", lang): new_ai_hotkey,
+            _t("settings_hotkey_dictation_label", lang): new_dictation_hotkey,
+            _t("settings_hotkey_panel_label", lang): new_panel_hotkey,
+        })
+        if conflicts:
+            label_a, label_b = conflicts[0]
+            message = _t("settings_hotkey_conflict", lang).format(a=label_a, b=label_b)
+            QMessageBox.warning(self, _t("settings_title", lang), message)
             return
         self.settings.start_with_windows = self.startup_checkbox.isChecked()
         self.settings.auto_prewarm = True
@@ -498,22 +549,29 @@ class SettingsDialog(QDialog):
         self.settings.asr_language = str(self.language_combo.currentData())
         self.settings.hotkey_ai = new_ai_hotkey
         self.settings.hotkey_dictation = new_dictation_hotkey
+        self.settings.hotkey_rewrite_panel = new_panel_hotkey
+        self.vocab.industry = str(self.industry_combo.currentData())
+        self.vocab.set_custom_entries_from_lines(self.vocab_edit.toPlainText().splitlines())
+        self.vocab.save()
         if self.settings.start_with_windows:
             self.startup_registration.enable()
         else:
             self.startup_registration.disable()
         save_settings(self.root, self.settings)
+        self.model_warmup.update_keep_alive(self.settings)
         super().accept()
 
 
 class RightAltKeyboardHook(QObject):
-    activated = Signal()    # dictation hotkey pressed
-    ctrl_space = Signal()   # AI hotkey pressed
+    activated = Signal()         # dictation hotkey pressed
+    ctrl_space = Signal()        # AI hotkey pressed
+    panel_activated = Signal()   # text-rewrite-panel hotkey pressed
 
     def __init__(
         self,
         ai_hotkey: str = "ctrl+space",
         dictation_hotkey: str = "right_alt",
+        panel_hotkey: str = "ctrl+alt+r",
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -521,10 +579,11 @@ class RightAltKeyboardHook(QObject):
         self._ai_down = False
         self._dictation_combo_down = False
         self._right_alt_down = False
+        self._panel_down = False
         self._callback = HOOK_CALLBACK(self._keyboard_proc)
-        self.set_hotkeys(ai_hotkey, dictation_hotkey)
+        self.set_hotkeys(ai_hotkey, dictation_hotkey, panel_hotkey)
 
-    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str) -> None:
+    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str, panel_hotkey: str = "ctrl+alt+r") -> None:
         parsed_ai = _parse_hotkey(ai_hotkey)
         self._ai_mods: frozenset[str] = parsed_ai[0] if parsed_ai else frozenset({"ctrl"})
         self._ai_vk: int = parsed_ai[1] if parsed_ai else VK_SPACE
@@ -538,10 +597,15 @@ class RightAltKeyboardHook(QObject):
             self._dictation_mods = parsed_d[0] if parsed_d else frozenset()
             self._dictation_vk = parsed_d[1] if parsed_d else None
 
+        parsed_p = _parse_hotkey(panel_hotkey)
+        self._panel_mods: frozenset[str] = parsed_p[0] if parsed_p else frozenset({"ctrl", "alt"})
+        self._panel_vk: int | None = parsed_p[1] if parsed_p else None
+
         # Reset tracking state when hotkeys change
         self._ai_down = False
         self._dictation_combo_down = False
         self._right_alt_down = False
+        self._panel_down = False
 
     def install(self) -> None:
         if self._hook_handle:
@@ -562,6 +626,9 @@ class RightAltKeyboardHook(QObject):
         ctypes.windll.user32.UnhookWindowsHookEx(self._hook_handle)
         self._hook_handle = None
         self._right_alt_down = False
+        self._ai_down = False
+        self._dictation_combo_down = False
+        self._panel_down = False
 
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
         if n_code >= 0 and l_param:
@@ -580,6 +647,7 @@ class RightAltKeyboardHook(QObject):
         # re-pressed. GetAsyncKeyState is always accurate at hook-callback time.
         actual_ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
         actual_shift = bool(ctypes.windll.user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        actual_alt = bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
 
         if vk_code in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
             return False  # modifier-only events never trigger hotkeys
@@ -587,17 +655,25 @@ class RightAltKeyboardHook(QObject):
         if vk_code in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
             return False
 
-        # Reset tracking flags if Ctrl is actually released (handles any sync gaps).
+        if vk_code in (VK_MENU, VK_LMENU):
+            return False  # left/generic Alt only contributes as a modifier; right Alt handled below
+
+        # Reset tracking flags if a modifier is actually released (handles any sync gaps).
         if not actual_ctrl:
             self._ai_down = False
             self._dictation_combo_down = False
+            self._panel_down = False
+        if not actual_alt:
+            self._ai_down = False
+            self._dictation_combo_down = False
+            self._panel_down = False
 
         is_down = message in (WM_KEYDOWN, WM_SYSKEYDOWN)
         is_up = message in (WM_KEYUP, WM_SYSKEYUP)
 
         # AI hotkey
         if vk_code == self._ai_vk:
-            if is_down and self._mods_match_actual(self._ai_mods, actual_ctrl, actual_shift) and not self._ai_down:
+            if is_down and self._mods_match_actual(self._ai_mods, actual_ctrl, actual_shift, actual_alt) and not self._ai_down:
                 self._ai_down = True
                 self.ctrl_space.emit()
                 return True
@@ -609,7 +685,7 @@ class RightAltKeyboardHook(QObject):
         if (not self._dictation_is_right_alt
                 and self._dictation_vk is not None
                 and vk_code == self._dictation_vk):
-            if is_down and self._mods_match_actual(self._dictation_mods, actual_ctrl, actual_shift) and not self._dictation_combo_down:
+            if is_down and self._mods_match_actual(self._dictation_mods, actual_ctrl, actual_shift, actual_alt) and not self._dictation_combo_down:
                 self._dictation_combo_down = True
                 self.activated.emit()
                 return True
@@ -630,12 +706,26 @@ class RightAltKeyboardHook(QObject):
                 self._right_alt_down = False
                 return was_down
 
+        # Text-rewrite-panel hotkey
+        if self._panel_vk is not None and vk_code == self._panel_vk:
+            if is_down and self._mods_match_actual(self._panel_mods, actual_ctrl, actual_shift, actual_alt) and not self._panel_down:
+                self._panel_down = True
+                self.panel_activated.emit()
+                return True
+            if is_up and self._panel_down:
+                self._panel_down = False
+                return True
+
         return False
 
     @staticmethod
-    def _mods_match_actual(required: frozenset[str], ctrl: bool, shift: bool) -> bool:
+    def _mods_match_actual(required: frozenset[str], ctrl: bool, shift: bool, alt: bool) -> bool:
         """Check modifier state against required set using live OS-queried values."""
-        return (ctrl == ("ctrl" in required)) and (shift == ("shift" in required))
+        return (
+            (ctrl == ("ctrl" in required))
+            and (shift == ("shift" in required))
+            and (alt == ("alt" in required))
+        )
 
     @staticmethod
     def _is_right_alt(vk_code: int, flags: int) -> bool:
@@ -645,16 +735,23 @@ class RightAltKeyboardHook(QObject):
 class GlobalHotkeyReceiver(QWidget):
     activated = Signal()
     dictation_activated = Signal()
+    panel_activated = Signal()
 
-    def __init__(self, ai_hotkey: str = "ctrl+space", dictation_hotkey: str = "right_alt") -> None:
+    def __init__(
+        self,
+        ai_hotkey: str = "ctrl+space",
+        dictation_hotkey: str = "right_alt",
+        panel_hotkey: str = "ctrl+alt+r",
+    ) -> None:
         super().__init__()
         self._registered = False
-        self._right_alt_hook = RightAltKeyboardHook(ai_hotkey, dictation_hotkey, self)
+        self._right_alt_hook = RightAltKeyboardHook(ai_hotkey, dictation_hotkey, panel_hotkey, self)
         self._right_alt_hook.ctrl_space.connect(self.activated.emit)
         self._right_alt_hook.activated.connect(self.dictation_activated.emit)
+        self._right_alt_hook.panel_activated.connect(self.panel_activated.emit)
 
-    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str) -> None:
-        self._right_alt_hook.set_hotkeys(ai_hotkey, dictation_hotkey)
+    def set_hotkeys(self, ai_hotkey: str, dictation_hotkey: str, panel_hotkey: str = "ctrl+alt+r") -> None:
+        self._right_alt_hook.set_hotkeys(ai_hotkey, dictation_hotkey, panel_hotkey)
 
     def register(self) -> None:
         if self._registered:
@@ -759,19 +856,21 @@ QPushButton#copyBtn:disabled { background: #c0c8d0; color: #888; }
 class HotkeyButton(QPushButton):
     """Click to enter capture mode, then press any key combination to record it as a hotkey.
 
-    Supported combinations:
-    - Ctrl + key  (e.g. Ctrl+Space, Ctrl+Shift+R)
-    - Right Alt   (standalone)
+    Pure capture, like WeChat's hotkey recorder: any modifier combo (Ctrl/Shift/Alt) plus a
+    main key is accepted as-is. A bare key with no modifier is only accepted if it's an F-key
+    (F1-F12) — anything else would break normal typing everywhere else on the system.
+    Right Alt can also be captured standalone, but only where allow_right_alt=True (dictation).
     Press Escape to cancel capture without changing the hotkey.
     """
 
     hotkey_changed = Signal(str)
 
-    def __init__(self, hotkey: str, lang: str = "zh", parent=None) -> None:
+    def __init__(self, hotkey: str, lang: str = "zh", parent=None, allow_right_alt: bool = False) -> None:
         super().__init__(parent)
         self._hotkey = hotkey
         self._lang = lang
         self._capturing = False
+        self._allow_right_alt = allow_right_alt
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumWidth(170)
         self._update_display()
@@ -796,32 +895,40 @@ class HotkeyButton(QPushButton):
             self._update_display()
             return
 
-        # Right Alt — check native VK or extended scan code
+        # Right Alt — check native VK or extended scan code; standalone hotkey like WeChat's.
         if key == Qt.Key.Key_Alt:
             native_vk = event.nativeVirtualKey()
             native_scan = event.nativeScanCode()
-            if native_vk == 0xA5 or (native_scan & 0x100):  # VK_RMENU or extended alt
+            if self._allow_right_alt and (native_vk == 0xA5 or (native_scan & 0x100)):  # VK_RMENU or extended alt
                 self._finish_capture("right_alt")
-            return  # ignore Left Alt
+            return  # Left Alt alone isn't a usable standalone hotkey; ignore until combined
 
-        # Ignore other standalone modifier presses
+        # Ignore other standalone modifier presses — they only count as part of a combo below.
         if key in (Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Meta):
             return
 
-        # Build modifier prefix — Ctrl required for combos
+        # Pure capture: record whatever modifier combination the user actually held down.
+        # No artificial "must include Ctrl" restriction — matches WeChat's hotkey recorder.
         mods = event.modifiers()
         parts: list[str] = []
         if mods & Qt.KeyboardModifier.ControlModifier:
             parts.append("ctrl")
+        if mods & Qt.KeyboardModifier.AltModifier:
+            parts.append("alt")
         if mods & Qt.KeyboardModifier.ShiftModifier:
             parts.append("shift")
-        if "ctrl" not in parts:
-            return  # combos without Ctrl are too risky; stay in capture mode
 
         key_name = self._resolve_key(key, event.nativeVirtualKey())
-        if key_name:
-            parts.append(key_name)
-            self._finish_capture("+".join(parts))
+        if not key_name:
+            return
+        is_function_key = key_name.startswith("f") and key_name[1:].isdigit()
+        if not parts and not is_function_key:
+            # A bare letter/digit/space with no modifier would break normal typing
+            # everywhere else; require at least one modifier unless it's an F-key.
+            return
+
+        parts.append(key_name)
+        self._finish_capture("+".join(parts))
 
     def _finish_capture(self, hotkey: str) -> None:
         self._hotkey = hotkey
@@ -1012,6 +1119,10 @@ class ResultWindow(QMainWindow):
         self._anim_frame = 0
         self._target_hwnd: int | None = None  # for multi-monitor pill positioning
         self._audio_ducker = AudioDucker()
+        self._recording_started_at = time.monotonic()
+        self._last_audio_seconds = 0.0
+        self._last_raw_chars = 0
+        self._last_final_chars = 0
         # Coordinating insert + replace for AI mode
         self._insert_in_progress = False
         self._pending_final_text: str | None = None
@@ -1142,6 +1253,7 @@ class ResultWindow(QMainWindow):
         self._pending_final_gen = None
         self.recorder.start()
         self._audio_ducker.duck()
+        self._recording_started_at = time.monotonic()
         self.last_activity_at = time.monotonic()
         self._pill_state = self._STATE_RECORDING
         self._anim_frame = 0
@@ -1170,6 +1282,7 @@ class ResultWindow(QMainWindow):
             return
         audio_path = self.recorder.stop()
         self._audio_ducker.restore()
+        self._last_audio_seconds = time.monotonic() - self._recording_started_at
         self.last_activity_at = time.monotonic()
         self._pill_state = self._STATE_ASR
         self._anim_frame = 0
@@ -1223,6 +1336,8 @@ class ResultWindow(QMainWindow):
         final_text = result.optimized_prompt or result.corrected_text or result.raw_text
         self._pending_final_text = final_text
         self._pending_final_gen = gen
+        self._last_raw_chars = len(result.raw_text)
+        self._last_final_chars = len(final_text)
         self._maybe_start_replace()
 
     def _maybe_start_replace(self) -> None:
@@ -1256,6 +1371,7 @@ class ResultWindow(QMainWindow):
         if gen != self._replacement_generation:
             return
         self.last_activity_at = time.monotonic()
+        self._log_usage("ai", self._last_raw_chars, self._last_final_chars, success=True)
         self._hide_pill()
 
     # ------------------------------------------------------------------ dictation flow
@@ -1274,9 +1390,24 @@ class ResultWindow(QMainWindow):
         ok = self.text_injector.insert_text(self._input_session, text)
         if ok:
             self.last_activity_at = time.monotonic()
+            self._log_usage("dictation", len(text), len(text), success=True)
             return
         if retries < 5:
             QTimer.singleShot(500, lambda: self._inject_dictation(text, gen, retries + 1))
+
+    def _log_usage(self, mode: str, raw_chars: int, final_chars: int, success: bool) -> None:
+        try:
+            log_usage(
+                self.root,
+                mode=mode,
+                audio_seconds=getattr(self, "_last_audio_seconds", 0.0),
+                raw_chars=raw_chars,
+                final_chars=final_chars,
+                success=success,
+                timestamp=time.time(),
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ error
 
@@ -1378,13 +1509,14 @@ class DesktopController:
         self.tray = QSystemTrayIcon(app_icon_for_root(self.root), app)
         self.tray.setToolTip("Voice Prompt Tool")
         self.hotkey = (
-            GlobalHotkeyReceiver(self.settings.hotkey_ai, self.settings.hotkey_dictation)
+            GlobalHotkeyReceiver(self.settings.hotkey_ai, self.settings.hotkey_dictation, self.settings.hotkey_rewrite_panel)
             if enable_hotkey and os.name == "nt" else None
         )
         self._build_tray_menu()
         if self.hotkey is not None:
             self.hotkey.activated.connect(lambda: self.handle_recording_hotkey(mode="ai"))
             self.hotkey.dictation_activated.connect(lambda: self.handle_recording_hotkey(mode="dictation"))
+            self.hotkey.panel_activated.connect(self.open_rewrite_panel)
             self.hotkey.register()
         self.tray.show()
         self.start_model_warmup(show_window=show_on_start)
@@ -1450,7 +1582,7 @@ class DesktopController:
             accepted = dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             if self.hotkey is not None:
-                self.hotkey.set_hotkeys(self.settings.hotkey_ai, self.settings.hotkey_dictation)
+                self.hotkey.set_hotkeys(self.settings.hotkey_ai, self.settings.hotkey_dictation, self.settings.hotkey_rewrite_panel)
                 self.hotkey.register()
         if not accepted:
             return
