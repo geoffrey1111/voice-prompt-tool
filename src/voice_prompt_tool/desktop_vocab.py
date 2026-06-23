@@ -161,7 +161,11 @@ class VocabularyManager:
         except ImportError:
             return text
 
-        terms = [e.term for e in entries if len(e.term) >= 2]
+        # Fuzzy matching only kicks in for terms of 3+ characters. 2-character terms are
+        # short enough that "homophone-ish" matching collides with ordinary unrelated
+        # words constantly (that's exactly what was over-firing) — for those, rely on the
+        # exact alias pass above instead.
+        terms = [e.term for e in entries if len(e.term) >= 3]
         if not terms:
             return text
 
@@ -189,15 +193,18 @@ class VocabularyManager:
 
 
 def _pinyin_close(a: str, b: str) -> bool:
-    from pypinyin import lazy_pinyin
+    """True only for exact homophones (identical pinyin+tone for every character).
+
+    Previously this tolerated one differing syllable, which was far too loose: for
+    short terms that means accepting ~50% mismatch, so plenty of unrelated everyday
+    words of the same length ended up getting silently rewritten into someone's
+    industry term. Requiring an exact pinyin match keeps the catch limited to genuine
+    ASR homophone substitutions (different characters, same pronunciation).
+    """
+    from pypinyin import lazy_pinyin, Style
 
     if len(a) != len(b) or a == b:
         return a == b
-    pin_a = lazy_pinyin(a)
-    pin_b = lazy_pinyin(b)
-    if len(pin_a) != len(pin_b):
-        return False
-    differences = sum(1 for x, y in zip(pin_a, pin_b) if x != y)
-    # Allow exactly one differing syllable for terms with 2+ characters — catches a single
-    # mis-heard character while staying conservative enough not to over-correct unrelated text.
-    return differences <= 1
+    pin_a = lazy_pinyin(a, style=Style.TONE3)
+    pin_b = lazy_pinyin(b, style=Style.TONE3)
+    return pin_a == pin_b
