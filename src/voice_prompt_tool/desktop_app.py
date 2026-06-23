@@ -1875,6 +1875,15 @@ class DesktopController:
                     QSystemTrayIcon.MessageIcon.Information,
                     2500,
                 )
+                # Restart the idle clock the moment the model actually becomes usable.
+                # Without this, last_activity_at can still be holding a stale timestamp
+                # from long before the model was idle-released — e.g. the user was away
+                # for hours, the model got released as designed, then they pressed the
+                # hotkey to trigger a fresh warmup. The instant that finishes, the idle
+                # timer would see "idle" time computed from the old stale timestamp,
+                # which already exceeds the release threshold, and immediately release
+                # the model again right after it finished loading.
+                self.window.last_activity_at = time.monotonic()
             self._last_model_state = "ready"
             self.tray.setToolTip(_t("tooltip_ready", lang))
             return
