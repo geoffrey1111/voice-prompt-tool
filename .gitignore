@@ -30,6 +30,10 @@ __pycache__/
 test_wechat_*.py
 replace_icon.py
 
+# 开发中的内部文档（只放在开发文件夹本地，不入库、不进发布包）
+REQUIREMENTS.md
+ART_ASSETS_BRIEF.md
+
 # 其他
 .DS_Store
 Thumbs.db
